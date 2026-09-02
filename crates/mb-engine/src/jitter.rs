@@ -50,7 +50,10 @@ pub struct JitterBuffer {
 impl JitterBuffer {
     pub fn new(target_frames: usize, max_frames: usize) -> Self {
         assert!(target_frames >= 1, "target must hold at least one frame");
-        assert!(max_frames >= target_frames, "cap must not be below the target");
+        assert!(
+            max_frames >= target_frames,
+            "cap must not be below the target"
+        );
         Self {
             slots: BTreeMap::new(),
             target_frames,

@@ -4,7 +4,9 @@ Przenosi mikrofon z jednego komputera na drugi po sieci lokalnej. Na maszynie
 ze źródłem uruchamiasz `send`, na maszynie docelowej `recv` — i mikrofon
 pojawia się tam jako zwykłe urządzenie wejściowe.
 
-Projekt architektoniczny: [dokument techniczny](https://claude.ai/code/artifact/c6f3e44a-ac5e-4cda-8299-fce46b05237f).
+Założenia, decyzje projektowe i plan działania: **[docs/ARCHITEKTURA.md](docs/ARCHITEKTURA.md)**
+(ta sama treść z diagramami, do czytania w przeglądarce:
+[dokument techniczny](https://claude.ai/code/artifact/c6f3e44a-ac5e-4cda-8299-fce46b05237f)).
 
 ## Stan: etap M2
 
@@ -161,3 +163,8 @@ zapas na kaprysy sieci.
   mierzymy w całych ramkach. To 0,017 półtonu — poniżej progu słyszalności.
 * `rubato` jest przypięte do 0.16, choć jest już 5.0; API zmieniło się na tyle,
   że aktualizacja to osobne zadanie.
+
+## Licencja
+
+MIT albo Apache-2.0, do wyboru — [LICENSE-MIT](LICENSE-MIT),
+[LICENSE-APACHE](LICENSE-APACHE).

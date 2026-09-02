@@ -150,7 +150,10 @@ mod tests {
     fn cancels_a_negative_drift_without_underrunning() {
         let (depth, correction) = simulate(-30.0, 30.0, 3600.0);
         assert!((depth - 30.0).abs() < 2.0, "bufor: {depth:.1} ms");
-        assert!(correction > 0.0, "przy wolniejszym nadawcy zwalniamy odtwarzanie");
+        assert!(
+            correction > 0.0,
+            "przy wolniejszym nadawcy zwalniamy odtwarzanie"
+        );
     }
 
     #[test]

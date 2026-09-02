@@ -45,12 +45,16 @@ pub fn run(listen: &str, sink: &str, buffer_ms: u32, adaptive: bool) -> Result<(
     let target_frames = (buffer_ms / FRAME_MS).max(1) as usize;
     let max_frames = (MAX_BUFFER_MS / FRAME_MS) as usize;
 
-    let listener = TcpListener::bind(listen_addr)
-        .with_context(|| format!("nie mogę zająć {listen_addr}"))?;
+    let listener =
+        TcpListener::bind(listen_addr).with_context(|| format!("nie mogę zająć {listen_addr}"))?;
     println!("Nasłuchuję na {listen_addr}. Ctrl-C kończy.");
     println!(
         "Bufor jitter: {buffer_ms} ms ({target_frames} × {FRAME_MS} ms){}.",
-        if adaptive { ", adaptacyjny" } else { ", stały" }
+        if adaptive {
+            ", adaptacyjny"
+        } else {
+            ", stały"
+        }
     );
 
     let running = Arc::new(AtomicBool::new(true));
@@ -473,7 +477,8 @@ impl SharedStats {
         f64::from_bits(self.correction.load(Ordering::Relaxed))
     }
     fn set_setpoint(&self, v: f32) {
-        self.setpoint_ms.store(v.to_bits() as u64, Ordering::Relaxed);
+        self.setpoint_ms
+            .store(v.to_bits() as u64, Ordering::Relaxed);
     }
     fn setpoint(&self) -> f32 {
         f32::from_bits(self.setpoint_ms.load(Ordering::Relaxed) as u32)
@@ -497,7 +502,10 @@ fn check(hello: &mb_proto::Hello) -> std::result::Result<(), String> {
         return Err(format!("{} kanałów (obsługuję mono)", hello.channels));
     }
     if hello.frame_ms != FRAME_MS {
-        return Err(format!("ramka {} ms (obsługuję {FRAME_MS})", hello.frame_ms));
+        return Err(format!(
+            "ramka {} ms (obsługuję {FRAME_MS})",
+            hello.frame_ms
+        ));
     }
     if hello.payload != PayloadKind::Opus {
         return Err("obsługuję wyłącznie Opusa".into());

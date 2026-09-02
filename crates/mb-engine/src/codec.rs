@@ -140,7 +140,10 @@ mod tests {
         for f in &frames {
             let packet = enc.encode(f).unwrap();
             assert!(!packet.is_empty(), "koder nie może zwrócić pustej ramki");
-            assert!(packet.len() < 200, "10 ms przy 24 kbps to dziesiątki bajtów");
+            assert!(
+                packet.len() < 200,
+                "10 ms przy 24 kbps to dziesiątki bajtów"
+            );
             let n = dec.decode(packet, &mut out).unwrap();
             assert_eq!(n, FRAME_SAMPLES);
             last = energy(&out);

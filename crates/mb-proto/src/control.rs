@@ -60,8 +60,8 @@ impl ControlMsg {
     pub fn write_to<W: Write>(&self, w: &mut W) -> Result<()> {
         let mut body = Vec::new();
         ciborium::into_writer(self, &mut body).map_err(|e| ProtoError::Encode(e.to_string()))?;
-        let len = u32::try_from(body.len())
-            .map_err(|_| ProtoError::ControlFrameTooLarge(u32::MAX))?;
+        let len =
+            u32::try_from(body.len()).map_err(|_| ProtoError::ControlFrameTooLarge(u32::MAX))?;
         if len > MAX_FRAME {
             return Err(ProtoError::ControlFrameTooLarge(len));
         }

@@ -16,7 +16,10 @@ struct Lcg(u64);
 impl Lcg {
     fn next_u64(&mut self) -> u64 {
         // Numerical Recipes constants.
-        self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         self.0
     }
 
@@ -50,7 +53,9 @@ pub struct NetSim {
 impl NetSim {
     pub fn new(seed: u64, loss_pct: f64, base_delay_ms: f64, jitter_ms: f64) -> Self {
         Self {
-            rng: Lcg(seed.wrapping_mul(2_862_933_555_777_941_757).wrapping_add(3_037_000_493)),
+            rng: Lcg(seed
+                .wrapping_mul(2_862_933_555_777_941_757)
+                .wrapping_add(3_037_000_493)),
             loss: loss_pct / 100.0,
             base_delay_us: (base_delay_ms * 1000.0) as u64,
             jitter_us: (jitter_ms * 1000.0) as u64,

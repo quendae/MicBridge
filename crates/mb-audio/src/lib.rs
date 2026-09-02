@@ -43,11 +43,11 @@ pub struct DeviceInfo {
 /// Matching is case-insensitive on a substring, because vendors append
 /// suffixes like "(VB-Audio Virtual Cable)" and localise nothing.
 pub const VIRTUAL_SINK_HINTS: &[&str] = &[
-    "cable input",     // VB-CABLE
+    "cable input", // VB-CABLE
     "voicemeeter input",
     "voicemeeter aux input",
     "line 1 (virtual audio cable)",
-    "micbridge",       // our own PipeWire node on Linux
+    "micbridge", // our own PipeWire node on Linux
 ];
 
 pub fn list(dir: Direction) -> Result<Vec<DeviceInfo>> {
@@ -118,10 +118,7 @@ pub fn find(dir: Direction, selector: &str) -> Result<Device> {
             bail!("`auto` działa tylko dla urządzenia wyjściowego");
         }
         for hint in VIRTUAL_SINK_HINTS {
-            if let Some(i) = names
-                .iter()
-                .position(|n| n.to_lowercase().contains(hint))
-            {
+            if let Some(i) = names.iter().position(|n| n.to_lowercase().contains(hint)) {
                 tracing::info!(device = %names[i], "wykryto wirtualny kabel");
                 return Ok(devices.into_iter().nth(i).expect("index from position"));
             }
