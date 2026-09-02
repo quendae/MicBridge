@@ -1,0 +1,21 @@
+[package]
+name = "mb-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "micbridge"
+path = "src/main.rs"
+
+[dependencies]
+mb-proto = { path = "../mb-proto" }
+mb-audio = { path = "../mb-audio" }
+mb-engine = { path = "../mb-engine" }
+anyhow.workspace = true
+clap.workspace = true
+ringbuf.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+ctrlc = "3.4"
