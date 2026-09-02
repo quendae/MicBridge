@@ -8,7 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
 
 jobs:
   test:
@@ -39,8 +38,11 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
+      # -D warnings goes here rather than in RUSTFLAGS: as an env var it also
+      # applies to dependencies, so a new compiler warning in a crate we do not
+      # own would break the build.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Testy
         run: cargo test --workspace
