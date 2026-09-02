@@ -4,8 +4,8 @@
 //! reconciled here: multi-channel input is downmixed, mono output is fanned out
 //! to every channel the device wants.
 //!
-//! Milestone 1 requires the device to run at 48 kHz natively; sample-rate
-//! conversion arrives with the drift controller in milestone 2.
+//! Sample rate is a preference, not a demand: the handle reports what the
+//! device actually gave, and the engine resamples the difference away.
 
 use anyhow::{anyhow, bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -171,11 +171,16 @@ pub fn find(dir: Direction, selector: &str) -> Result<Device> {
     }
 }
 
-/// Pick a device configuration that runs at exactly `rate`.
+/// Pick a device configuration, preferring `rate` but never insisting on it.
 ///
-/// Preference order: fewest channels (mono input costs no downmix), then f32
-/// over i16 (cpal converts either way, f32 avoids a rounding step).
-fn config_at_rate(device: &Device, dir: Direction, rate: u32) -> Result<SupportedStreamConfig> {
+/// Milestone 1 refused anything but 48 kHz. Now the engine resamples at its
+/// edges, so a device that only offers 44.1 kHz is a routine case rather than
+/// an error — and telling a user to go change their Windows sound settings was
+/// never an acceptable answer.
+///
+/// Preference order: the requested rate, then fewest channels (mono input
+/// costs no downmix), then f32 over i16.
+fn config_for(device: &Device, dir: Direction, rate: u32) -> Result<SupportedStreamConfig> {
     let ranges: Vec<_> = match dir {
         Direction::Input => device.supported_input_configs()?.collect(),
         Direction::Output => device.supported_output_configs()?.collect(),
@@ -183,31 +188,34 @@ fn config_at_rate(device: &Device, dir: Direction, rate: u32) -> Result<Supporte
 
     let mut usable: Vec<_> = ranges
         .into_iter()
-        .filter(|r| {
-            r.min_sample_rate().0 <= rate
-                && rate <= r.max_sample_rate().0
-                && matches!(r.sample_format(), SampleFormat::F32 | SampleFormat::I16)
-        })
+        .filter(|r| matches!(r.sample_format(), SampleFormat::F32 | SampleFormat::I16))
         .collect();
+
+    if usable.is_empty() {
+        let name = device.name().unwrap_or_else(|_| "<bez nazwy>".into());
+        bail!("urządzenie `{name}` nie oferuje formatu f32 ani i16");
+    }
 
     usable.sort_by_key(|r| {
         (
+            // Ranges that cover the requested rate come first.
+            u8::from(!(r.min_sample_rate().0 <= rate && rate <= r.max_sample_rate().0)),
             r.channels(),
             u8::from(r.sample_format() != SampleFormat::F32),
         )
     });
 
-    let chosen = usable.into_iter().next().ok_or_else(|| {
-        let name = device.name().unwrap_or_else(|_| "<bez nazwy>".into());
-        anyhow!(
-            "urządzenie `{name}` nie obsługuje {rate} Hz w formacie f32/i16.\n\
-             Ustaw {rate} Hz we właściwościach urządzenia w systemie \
-             (Windows: Panel dźwięku → Właściwości → Zaawansowane).\n\
-             Konwersja częstotliwości wejdzie w etapie M2."
-        )
-    })?;
-
-    Ok(chosen.with_sample_rate(SampleRate(rate)))
+    let chosen = usable.into_iter().next().expect("checked non-empty");
+    let picked = rate.clamp(chosen.min_sample_rate().0, chosen.max_sample_rate().0);
+    if picked != rate {
+        tracing::info!(
+            device = %device.name().unwrap_or_default(),
+            wanted = rate,
+            using = picked,
+            "urządzenie nie ma żądanej częstotliwości — resampling po stronie silnika"
+        );
+    }
+    Ok(chosen.with_sample_rate(SampleRate(picked)))
 }
 
 pub struct CaptureHandle {
@@ -220,6 +228,9 @@ pub struct CaptureHandle {
 
 /// Start capturing, calling `on_mono` with downmixed f32 samples in [-1, 1].
 ///
+/// `rate` is a preference; check `CaptureHandle::sample_rate` for what the
+/// device actually gave and resample if it differs.
+///
 /// `on_mono` runs on the audio thread: no allocation, no locks, no I/O.
 pub fn start_capture<F>(selector: &str, rate: u32, mut on_mono: F) -> Result<CaptureHandle>
 where
@@ -227,7 +238,7 @@ where
 {
     let device = find(Direction::Input, selector)?;
     let device_name = device.name().unwrap_or_else(|_| "<bez nazwy>".into());
-    let supported = config_at_rate(&device, Direction::Input, rate)?;
+    let supported = config_for(&device, Direction::Input, rate)?;
     let format = supported.sample_format();
     let config: StreamConfig = supported.into();
     let channels = config.channels as usize;
@@ -284,6 +295,9 @@ pub struct PlaybackHandle {
 
 /// Start playback, asking `fill_mono` for f32 samples in [-1, 1].
 ///
+/// `rate` is a preference; check `PlaybackHandle::sample_rate` for what the
+/// device actually gave.
+///
 /// The callback must fill the whole slice; silence is the correct answer when
 /// there is nothing to play. It runs on the audio thread.
 pub fn start_playback<F>(selector: &str, rate: u32, mut fill_mono: F) -> Result<PlaybackHandle>
@@ -292,7 +306,7 @@ where
 {
     let device = find(Direction::Output, selector)?;
     let device_name = device.name().unwrap_or_else(|_| "<bez nazwy>".into());
-    let supported = config_at_rate(&device, Direction::Output, rate)?;
+    let supported = config_for(&device, Direction::Output, rate)?;
     let format = supported.sample_format();
     let config: StreamConfig = supported.into();
     let channels = config.channels as usize;

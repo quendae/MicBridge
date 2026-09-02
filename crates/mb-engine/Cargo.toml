@@ -7,4 +7,7 @@ license.workspace = true
 
 [dependencies]
 mb-proto = { path = "../mb-proto" }
+anyhow.workspace = true
+opus = "0.4"
+rubato = "0.16"
 tracing.workspace = true

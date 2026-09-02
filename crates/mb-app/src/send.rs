@@ -1,7 +1,11 @@
-//! Strona nadająca: przechwytuje mikrofon i wysyła go po UDP.
+//! Strona nadająca: przechwytuje mikrofon, koduje Opusem i wysyła po UDP.
 //!
-//! Pacing bierze się z karty dźwiękowej — wątek sieciowy wysyła ramkę dopiero,
-//! gdy callback audio dostarczy 480 próbek. Żadnego własnego zegara.
+//! Pacing bierze się z karty dźwiękowej — ramka wychodzi dopiero, gdy callback
+//! audio dostarczy materiał. Żadnego własnego zegara.
+//!
+//! Jeśli urządzenie nie pracuje przy 48 kHz, resampling siedzi tutaj, w wątku
+//! sieciowym. Callback audio zostaje pusty: kopiuje próbki do pierścienia i nic
+//! poza tym.
 
 use std::io::Write;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
@@ -13,19 +17,23 @@ use anyhow::{anyhow, bail, Context, Result};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 
+use mb_engine::{OpusEncoder, VariableResampler};
 use mb_proto::{
-    rtp::encode_pcm, ControlMsg, Hello, PayloadKind, RtpHeader, CONTROL_PORT, FRAME_MS,
-    FRAME_SAMPLES, PROTOCOL_VERSION, RTP_HEADER_LEN, SAMPLE_RATE,
+    ControlMsg, Hello, PayloadKind, RtpHeader, CONTROL_PORT, FRAME_MS, FRAME_SAMPLES,
+    PROTOCOL_VERSION, RTP_HEADER_LEN, SAMPLE_RATE,
 };
 
-/// Sekunda dźwięku. Gdyby wątek sieciowy się zaciął, wolimy nadpisać stare
-/// próbki niż rosnąć w nieskończoność.
+/// Sekunda dźwięku. Gdyby wątek sieciowy się zaciął, wolimy zgubić próbki niż
+/// rosnąć w nieskończoność.
 const RING_SAMPLES: usize = SAMPLE_RATE as usize;
+/// Ile próbek naraz podajemy resamplerowi. Wielkość jest dowolna — dzięki temu
+/// nie musi dzielić częstotliwości urządzenia bez reszty.
+const RESAMPLE_CHUNK: usize = 480;
 
 /// Pseudo-urządzenie: syntetyczny sinus zamiast mikrofonu.
 ///
-/// Pozwala przetestować całą ścieżkę — ramkowanie, sieć, bufor jitter, ujście —
-/// na maszynie bez mikrofonu, i daje sygnał o znanym kształcie do sprawdzenia,
+/// Pozwala przetestować całą ścieżkę — kodek, sieć, bufor jitter, ujście — na
+/// maszynie bez mikrofonu, i daje sygnał o znanym kształcie do sprawdzenia,
 /// czy po drugiej stronie nic go nie zniekształca.
 pub const TONE_SELECTOR: &str = "tone";
 const TONE_HZ: f32 = 440.0;
@@ -37,8 +45,6 @@ enum Source {
     Tone,
 }
 
-/// Wypełnia pierścień sinusem, taktowany bezwzględnymi terminami, żeby drobne
-/// spóźnienia się nie kumulowały.
 fn generate_tone<P: Producer<Item = f32>>(producer: &mut P, running: &AtomicBool) {
     let step = std::f32::consts::TAU * TONE_HZ / SAMPLE_RATE as f32;
     let mut phase = 0f32;
@@ -59,28 +65,65 @@ fn generate_tone<P: Producer<Item = f32>>(producer: &mut P, running: &AtomicBool
         if let Some(wait) = deadline.checked_duration_since(Instant::now()) {
             std::thread::sleep(wait);
         } else {
-            // Spóźnieni: nie próbujemy nadrabiać, tylko przesuwamy termin.
             deadline = Instant::now();
         }
     }
 }
 
-pub fn run(to: &str, device: &str, gain_db: f32) -> Result<()> {
+/// Diagnostyczne gubienie pakietów tuż przed wysłaniem.
+///
+/// `tc netem` jest linuksowy, a sprawdzić trzeba obie strony — także wtedy, gdy
+/// nadajnik stoi na Windows. Ziarno jest stałe, więc przebieg da się powtórzyć.
+struct Dropper {
+    threshold: u64,
+    state: u64,
+    pub dropped: u64,
+}
+
+impl Dropper {
+    fn new(pct: f32) -> Self {
+        Self {
+            threshold: (pct.clamp(0.0, 100.0) as f64 / 100.0 * u64::MAX as f64) as u64,
+            state: 0x2545_F491_4F6C_DD1D,
+            dropped: 0,
+        }
+    }
+
+    fn should_drop(&mut self) -> bool {
+        if self.threshold == 0 {
+            return false;
+        }
+        self.state = self
+            .state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let drop = self.state < self.threshold;
+        if drop {
+            self.dropped += 1;
+        }
+        drop
+    }
+}
+
+pub fn run(to: &str, device: &str, gain_db: f32, bitrate: u32, drop_pct: f32) -> Result<()> {
     let control_addr = resolve(to, CONTROL_PORT)?;
     let gain = 10f32.powf(gain_db / 20.0);
 
-    // 1. Mikrofon najpierw — bez sensu zawracać głowę drugiej maszynie,
-    //    jeśli lokalne urządzenie i tak nie działa.
+    // 1. Mikrofon najpierw — bez sensu zawracać głowę drugiej maszynie, jeśli
+    //    lokalne urządzenie i tak nie działa.
     let rb = HeapRb::<f32>::new(RING_SAMPLES);
     let (mut producer, mut consumer) = rb.split();
     let overruns = Arc::new(AtomicU64::new(0));
     let running = Arc::new(AtomicBool::new(true));
 
-    // `_source` trzyma strumień przy życiu; upuszczenie go zatrzymuje dźwięk.
-    let (_source, source_name) = if device.eq_ignore_ascii_case(TONE_SELECTOR) {
+    let (_source, source_name, device_rate) = if device.eq_ignore_ascii_case(TONE_SELECTOR) {
         let running = Arc::clone(&running);
         std::thread::spawn(move || generate_tone(&mut producer, &running));
-        (Source::Tone, format!("{TONE_SELECTOR} — generator 440 Hz"))
+        (
+            Source::Tone,
+            format!("{TONE_SELECTOR} — generator 440 Hz"),
+            SAMPLE_RATE,
+        )
     } else {
         let overruns = Arc::clone(&overruns);
         let capture = mb_audio::start_capture(device, SAMPLE_RATE, move |mono| {
@@ -96,24 +139,38 @@ pub fn run(to: &str, device: &str, gain_db: f32) -> Result<()> {
             "mikrofon otwarty"
         );
         let name = capture.device_name.clone();
-        (Source::Device(capture), name)
+        let rate = capture.sample_rate;
+        (Source::Device(capture), name, rate)
     };
+
+    // Urządzenie nie musi mieć 48 kHz; różnicę zdejmuje resampler.
+    let mut resampler = if device_rate == SAMPLE_RATE {
+        None
+    } else {
+        println!("Konwersja {device_rate} Hz → {SAMPLE_RATE} Hz.");
+        Some(VariableResampler::new(
+            SAMPLE_RATE as f64 / device_rate as f64,
+            RESAMPLE_CHUNK,
+        )?)
+    };
+
+    let mut encoder = OpusEncoder::new(bitrate)?;
 
     // 2. Uzgodnienie po TCP.
     let mut control = TcpStream::connect(control_addr)
         .with_context(|| format!("nie mogę połączyć się z {control_addr}"))?;
     control.set_nodelay(true)?;
 
-    let hello = Hello {
+    ControlMsg::Hello(Hello {
         version: PROTOCOL_VERSION,
-        payload: PayloadKind::PcmS16,
+        payload: PayloadKind::Opus,
         sample_rate: SAMPLE_RATE,
         channels: 1,
         frame_ms: FRAME_MS,
         device: source_name.clone(),
         host: hostname(),
-    };
-    ControlMsg::Hello(hello).write_to(&mut control)?;
+    })
+    .write_to(&mut control)?;
 
     let accept = match ControlMsg::read_from(&mut control)? {
         ControlMsg::Accept(a) => a,
@@ -143,20 +200,25 @@ pub fn run(to: &str, device: &str, gain_db: f32) -> Result<()> {
     })?;
     socket.connect(media_addr)?;
 
-    // 3. Statystyki z odbiornika przychodzą własnym wątkiem, żeby nie blokować
-    //    ścieżki wysyłkowej na odczycie z gniazda.
+    // 3. Statystyki z odbiornika czyta osobny wątek; ta sama wartość steruje
+    //    tym, ile bitów koder przeznacza na FEC.
+    let reported_loss = Arc::new(AtomicU64::new(0));
     {
         let running = Arc::clone(&running);
+        let reported_loss = Arc::clone(&reported_loss);
         let mut reader = control.try_clone()?;
         std::thread::spawn(move || {
             while running.load(Ordering::Relaxed) {
                 match ControlMsg::read_from(&mut reader) {
-                    Ok(ControlMsg::Stats(s)) => tracing::info!(
-                        strat = format!("{:.1}%", s.lost_pct),
-                        jitter = format!("{:.1} ms", s.jitter_ms),
-                        bufor = format!("{:.0} ms", s.buffer_ms),
-                        "odbiornik"
-                    ),
+                    Ok(ControlMsg::Stats(s)) => {
+                        reported_loss.store(s.lost_pct.to_bits() as u64, Ordering::Relaxed);
+                        tracing::debug!(
+                            strat = format!("{:.1}%", s.lost_pct),
+                            jitter = format!("{:.1} ms", s.jitter_ms),
+                            bufor = format!("{:.0} ms", s.buffer_ms),
+                            "odbiornik"
+                        );
+                    }
                     Ok(ControlMsg::Bye { reason }) => {
                         tracing::warn!(%reason, "odbiornik zakończył sesję");
                         running.store(false, Ordering::Relaxed);
@@ -182,51 +244,80 @@ pub fn run(to: &str, device: &str, gain_db: f32) -> Result<()> {
     }
 
     // 4. Pętla wysyłkowa.
-    let mut frame = vec![0f32; FRAME_SAMPLES];
+    let mut device_chunk = vec![0f32; RESAMPLE_CHUNK];
+    // Próbki już w dziedzinie 48 kHz, czekające na złożenie w pełne ramki.
+    let mut pending: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 4);
     let mut pcm = vec![0i16; FRAME_SAMPLES];
-    let mut packet = vec![0u8; RTP_HEADER_LEN + FRAME_SAMPLES * 2];
+    let mut packet = vec![0u8; RTP_HEADER_LEN + 1500];
 
     let mut seq: u16 = 0;
     let mut timestamp: u32 = 0;
     let mut sent: u64 = 0;
+    let mut bytes: u64 = 0;
     let mut peak = 0f32;
     let mut last_report = Instant::now();
 
-    println!("Nadaję. Ctrl-C kończy.");
+    let mut dropper = Dropper::new(drop_pct);
+    if drop_pct > 0.0 {
+        println!("UWAGA: celowo gubię {drop_pct}% pakietów (tryb diagnostyczny).");
+    }
+    println!("Nadaję Opusem, {} kbps. Ctrl-C kończy.", bitrate / 1000);
 
     while running.load(Ordering::Relaxed) {
-        if consumer.occupied_len() < FRAME_SAMPLES {
-            // Karta dźwiękowa jeszcze nie dostarczyła pełnej ramki.
+        if consumer.occupied_len() < RESAMPLE_CHUNK {
             std::thread::sleep(Duration::from_millis(1));
             continue;
         }
-        consumer.pop_slice(&mut frame);
+        consumer.pop_slice(&mut device_chunk);
 
-        for (dst, &src) in pcm.iter_mut().zip(frame.iter()) {
-            let v = (src * gain).clamp(-1.0, 1.0);
-            peak = peak.max(v.abs());
-            *dst = (v * 32767.0) as i16;
+        match resampler.as_mut() {
+            Some(r) => r.process(&device_chunk, &mut pending)?,
+            None => pending.extend_from_slice(&device_chunk),
         }
 
-        let header = RtpHeader {
-            marker: sent == 0,
-            payload: PayloadKind::PcmS16,
-            seq,
-            timestamp,
-            ssrc: accept.ssrc,
-        };
-        header.encode_into(&mut packet)?;
-        let n = encode_pcm(&pcm, &mut packet[RTP_HEADER_LEN..]);
+        while pending.len() >= FRAME_SAMPLES {
+            for (dst, &src) in pcm.iter_mut().zip(pending.iter()) {
+                let v = (src * gain).clamp(-1.0, 1.0);
+                peak = peak.max(v.abs());
+                *dst = (v * 32767.0) as i16;
+            }
+            pending.drain(..FRAME_SAMPLES);
 
-        if let Err(e) = socket.send(&packet[..RTP_HEADER_LEN + n]) {
-            tracing::warn!(error = %e, "nie udało się wysłać ramki");
+            let payload_len = {
+                let encoded = encoder.encode(&pcm)?;
+                packet[RTP_HEADER_LEN..RTP_HEADER_LEN + encoded.len()].copy_from_slice(encoded);
+                encoded.len()
+            };
+
+            RtpHeader {
+                marker: sent == 0,
+                payload: PayloadKind::Opus,
+                seq,
+                timestamp,
+                ssrc: accept.ssrc,
+            }
+            .encode_into(&mut packet)?;
+
+            if !dropper.should_drop() {
+                if let Err(e) = socket.send(&packet[..RTP_HEADER_LEN + payload_len]) {
+                    tracing::warn!(error = %e, "nie udało się wysłać ramki");
+                }
+            }
+
+            seq = seq.wrapping_add(1);
+            timestamp = timestamp.wrapping_add(FRAME_SAMPLES as u32);
+            sent += 1;
+            bytes += (RTP_HEADER_LEN + payload_len) as u64;
         }
-
-        seq = seq.wrapping_add(1);
-        timestamp = timestamp.wrapping_add(FRAME_SAMPLES as u32);
-        sent += 1;
 
         if last_report.elapsed() >= Duration::from_secs(1) {
+            let elapsed = last_report.elapsed().as_secs_f64();
+            last_report = Instant::now();
+
+            // Ile strat widzi odbiornik, tyle redundancji ma dokładać koder.
+            let loss = f32::from_bits(reported_loss.load(Ordering::Relaxed) as u32);
+            encoder.set_expected_loss(loss)?;
+
             let lost_input = overruns.swap(0, Ordering::Relaxed);
             if lost_input > 0 {
                 tracing::warn!(
@@ -234,12 +325,20 @@ pub fn run(to: &str, device: &str, gain_db: f32) -> Result<()> {
                     "bufor wejściowy się przepełnił — wątek sieciowy nie nadąża"
                 );
             }
+
             println!(
-                "  wysłano {sent:>6} ramek   szczyt {:>6.1} dBFS",
-                mb_audio::peak_dbfs(&[peak])
+                "  {sent:>7} ramek   {:>5.1} kbps   szczyt {:>6.1} dBFS                    FEC na {}% strat{}",
+                bytes as f64 * 8.0 / elapsed / 1000.0,
+                mb_audio::peak_dbfs(&[peak]),
+                encoder.expected_loss(),
+                if dropper.dropped > 0 {
+                    format!("   zgubiono celowo {}", dropper.dropped)
+                } else {
+                    String::new()
+                }
             );
             peak = 0.0;
-            last_report = Instant::now();
+            bytes = 0;
         }
     }
 
@@ -254,11 +353,7 @@ pub fn run(to: &str, device: &str, gain_db: f32) -> Result<()> {
 
 /// `host` albo `host:port`; bez portu dokleja domyślny.
 fn resolve(target: &str, default_port: u16) -> Result<SocketAddr> {
-    let with_port = if target.contains(':') && !target.starts_with('[') {
-        // IPv6 bez nawiasów potraktowalibyśmy tu błędnie, ale wtedy i tak
-        // wymagamy formy [::1]:47100.
-        target.to_string()
-    } else if target.starts_with('[') && target.contains("]:") {
+    let with_port = if has_port(target) {
         target.to_string()
     } else {
         format!("{target}:{default_port}")
@@ -271,8 +366,64 @@ fn resolve(target: &str, default_port: u16) -> Result<SocketAddr> {
         .ok_or_else(|| anyhow!("adres `{target}` nie wskazuje na nic"))
 }
 
+/// Rozstrzyga, czy użytkownik podał port.
+///
+/// Goły adres IPv6 sam w sobie jest pełen dwukropków, więc dla niego portem
+/// jest wyłącznie forma `[adres]:port`.
+fn has_port(target: &str) -> bool {
+    if target.starts_with('[') {
+        target.contains("]:")
+    } else {
+        target.matches(':').count() == 1
+    }
+}
+
 fn hostname() -> String {
     std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_else(|_| "nieznany".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_dropper_hits_close_to_the_requested_rate() {
+        let mut d = Dropper::new(5.0);
+        for _ in 0..100_000 {
+            d.should_drop();
+        }
+        let rate = d.dropped as f64 / 1000.0;
+        assert!((rate - 5.0).abs() < 0.4, "gubi {rate:.2}%");
+    }
+
+    #[test]
+    fn zero_percent_drops_nothing() {
+        let mut d = Dropper::new(0.0);
+        for _ in 0..10_000 {
+            assert!(!d.should_drop());
+        }
+    }
+
+    #[test]
+    fn a_bare_host_gets_the_default_port() {
+        assert_eq!(resolve("127.0.0.1", 47100).unwrap().port(), 47100);
+    }
+
+    #[test]
+    fn an_explicit_port_wins() {
+        assert_eq!(resolve("127.0.0.1:9000", 47100).unwrap().port(), 9000);
+    }
+
+    #[test]
+    fn ipv6_needs_brackets_to_carry_a_port() {
+        // Bare IPv6 is all colons; only the bracketed form names a port.
+        assert!(!has_port("::1"));
+        assert!(!has_port("fe80::1"));
+        assert!(has_port("[::1]:47100"));
+        assert!(!has_port("[::1]"));
+        assert_eq!(resolve("[::1]:9000", 47100).unwrap().port(), 9000);
+        assert_eq!(resolve("::1", 47100).unwrap().port(), 47100);
+    }
 }

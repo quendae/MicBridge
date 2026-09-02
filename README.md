@@ -6,22 +6,22 @@ pojawia się tam jako zwykłe urządzenie wejściowe.
 
 Projekt architektoniczny: [dokument techniczny](https://claude.ai/code/artifact/c6f3e44a-ac5e-4cda-8299-fce46b05237f).
 
-## Stan: etap M1
+## Stan: etap M2
 
-Działa surowy PCM po UDP z ręcznie podanym adresem. To szkielet, nie produkt.
+Działa Opus z FEC, bufor adaptacyjny i korekcja dryfu zegarów. Silnik jest
+gotowy; brakuje wszystkiego, co czyni z tego produkt.
 
 | Etap | Zakres | Stan |
 |------|--------|------|
-| M0 | weryfikacja łańcucha bez kodu (VBAN) | pominięte — zastąpione generatorem `--device tone` |
+| M0 | weryfikacja łańcucha bez kodu (VBAN) | pominięte — zastąpione `--device tone` |
 | M1 | PCM po UDP, wybór urządzeń, bufor jitter, kanał sterujący | **gotowe** |
-| M2 | Opus, FEC, bufor adaptacyjny, korekcja dryfu zegarów | następne |
-| M3 | wirtualne wejście: node PipeWire, wykrywanie VB-CABLE | |
+| M2 | Opus, FEC, bufor adaptacyjny, korekcja dryfu, resampling | **gotowe** |
+| M3 | wirtualne wejście: node PipeWire, wykrywanie VB-CABLE | następne |
 | M4 | mDNS, parowanie SPAKE2, okno egui | |
 | M5 | pakiety deb/rpm/AUR/Flatpak/MSI | |
 
-Ograniczenia M1, świadome: brak kodeka (768 kbps), brak szyfrowania, brak
-konwersji częstotliwości (urządzenie musi pracować przy 48 kHz), bufor
-o stałej głębokości, adres wpisywany ręcznie.
+Czego wciąż nie ma, świadomie: szyfrowania i parowania, wykrywania w sieci
+(adres wpisuje się ręcznie), tworzenia wirtualnego wejścia w Linuksie, okna.
 
 ## Budowanie
 
@@ -63,6 +63,18 @@ micbridge recv --sink auto --buffer-ms 30
 micbridge send --to 192.168.1.40 --device "yeti"
 ```
 
+Urządzenie nie musi pracować przy 48 kHz — różnicę zdejmuje resampler po tej
+stronie, która jej potrzebuje.
+
+Przydatne flagi:
+
+| Flaga | Do czego |
+|-------|----------|
+| `send --bitrate 32000` | więcej bitów, gdy 24 kbps nie wystarcza |
+| `send --gain-db 6` | cichy mikrofon |
+| `send --drop-pct 5` | diagnostyka: gub celowo pakiety i patrz, czy FEC nadąża |
+| `recv --fixed-buffer` | trzymaj zadaną poduszkę zamiast dopasowywać ją do łącza |
+
 `--sink auto` szuka wirtualnego kabla po nazwie (VB-CABLE, VoiceMeeter, VAC).
 Póki M3 nie doda tworzenia węzła PipeWire, na Linuksie wskaż ujście ręcznie.
 
@@ -86,25 +98,66 @@ w zaporze.
 
 ```
 crates/mb-proto/    ramkowanie RTP, sterowanie CBOR, rozszerzanie numeru sekwencji
-crates/mb-audio/    enumeracja i strumienie nad WASAPI / ALSA, mono f32 48 kHz
-crates/mb-engine/   bufor jitter i statystyki — bez systemu operacyjnego, w pełni testowalne
+crates/mb-audio/    enumeracja i strumienie nad WASAPI / ALSA, mono f32
+crates/mb-engine/   kodek, bufor jitter, regulator dryfu, resampler, symulator sieci
 crates/mb-app/      CLI; okno egui dochodzi w M4
 ```
 
+Bufor jitter trzyma pakiety **zakodowane**, nie zdekodowany dźwięk. Opus
+odtwarza zgubioną ramkę z zapasowej kopii wiezionej w ramce następnej, więc
+dekodowanie musi nastąpić po uporządkowaniu, z następnikiem w ręku —
+dekodowanie przy odbiorze wyrzucałoby tę możliwość do kosza.
+
+## Jak to jest testowane
+
 `mb-engine` nie dotyka karty dźwiękowej ani gniazda, więc cały rdzeń da się
-przetestować syntetycznym strumieniem pakietów.
+napędzić syntetycznym strumieniem. `netsim` daje trzy defekty prawdziwej
+sieci — stratę, zmienne opóźnienie i wynikające z niego przestawienia — z
+ziarnowanego generatora, więc awaria jest powtarzalna, a ośmiogodzinny przebieg
+trwa sekundę. `tc netem` zostaje właściwym narzędziem, ale wymaga dwóch maszyn
+i Linuksa.
 
-## Uwagi z testów
+Kryterium wyjścia z M2, spełnione:
 
-Pętla lokalna na Windows, 12 s tonu przez `127.0.0.1`: zero strat, jitter
-0,5 ms, bufor stabilnie na 30 ms.
+* osiem godzin przy dryfie od −50 do +50 ppm — opóźnienie mieści się w 3 ms od
+  celu (bez regulatora ten sam dryf dokłada blisko sekundę, co osobny test
+  sprawdza, żeby pierwszy nie mógł przejść przypadkiem)
+* 2% strat przez 60 s prawdziwego Opusa — ani jednej cichej ramki, straty
+  odtwarzane z FEC ponad czterokrotnie częściej niż ukrywane
+* 25 ms jittera na odstępie 10 ms, czyli pakiety regularnie się wyprzedzają —
+  poniżej 1% dziur
 
-Pierwsza wersja osiadała na 200 ms zamiast 30. Przyczyna: przy starcie karta
-dźwiękowa rusza z opóźnieniem, przez ten czas pakiety się piętrzą, a potem
-tempo produkcji równa się tempu konsumpcji — nadmiar nigdy sam nie znika.
-Bufor zrzuca go teraz przy wychodzeniu z prefillu, zanim cokolwiek zabrzmi
-(`JitterBuffer::trimmed`). Powolny dryf zegarów to osobny problem i należy
-do M2.
+Pętla lokalna na Windows z `--drop-pct 5`: bufor zbiega do 30 ms, FEC odtwarza
+straty, koder sam podnosi redundancję do 5%.
 
-Raportowane `bufor` obejmuje bufor jitter **i** pierścień przed kartą — samo
-podanie głębokości bufora zaniżałoby opóźnienie o dwie ramki.
+## Co wyszło dopiero z uruchomienia
+
+**Bufor osiadał na 200 ms zamiast 30** (M1). Karta dźwiękowa rusza z
+opóźnieniem rzędu sekundy, przez ten czas pakiety się piętrzą, a potem tempo
+produkcji równa się tempu konsumpcji — nadmiar nigdy sam nie znika. Bufor
+zrzuca go przy wychodzeniu z prefillu, zanim cokolwiek zabrzmi; pacer czeka na
+pierwsze żądanie karty, żeby to przycięcie wypadło dokładnie na starcie
+odtwarzania, a nie przed nim.
+
+**Bufor adaptacyjny uciekał do sufitu** (M2). Podnosiłem cel przy każdej
+stracie. To brzmi rozsądnie i jest błędne: poduszka kupuje czas dla pakietu,
+który *jeszcze jest w drodze*, a zgubiony nie przyjdzie nigdy — od niego jest
+FEC. Przy 5% strat dawało to pięć podniesień na sekundę wobec jednego obniżenia
+na trzydzieści spokojnych sekund, których nigdy nie było. Cel podnoszą teraz
+wyłącznie pakiety spóźnione i puste przebiegi, z ograniczeniem częstotliwości,
+żeby jeden zryw liczył się jako jedno zdarzenie.
+
+**Raportowane `bufor`** obejmuje bufor jitter **i** pierścień przed kartą —
+sama głębokość bufora zaniżałaby opóźnienie o dwie ramki. Regulator dryfu
+celuje jednak w sam bufor jitter: pierścień to stałe opóźnienie lokalne, nie
+zapas na kaprysy sieci.
+
+## Znane zachowania
+
+* Gdy karta rusza szczególnie wolno, poduszka startuje z 60–80 ms i regulator
+  ściąga ją do celu przez kilkanaście sekund. To jest wybór: zejście przez
+  resampling jest niesłyszalne, wyrzucenie ramek trzaskałoby.
+* Korekta dryfu w spoczynku waha się w granicach ±0,1%, bo głębokość bufora
+  mierzymy w całych ramkach. To 0,017 półtonu — poniżej progu słyszalności.
+* `rubato` jest przypięte do 0.16, choć jest już 5.0; API zmieniło się na tyle,
+  że aktualizacja to osobne zadanie.

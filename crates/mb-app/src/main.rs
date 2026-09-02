@@ -1,7 +1,8 @@
 //! MicBridge — przenosi mikrofon z jednego komputera na drugi.
 //!
-//! Etap M1: surowy PCM po UDP, adres podawany ręcznie, konsola zamiast okna.
-//! Wykrywanie mDNS, parowanie i okno dochodzą w M4.
+//! Etap M2: Opus z FEC, bufor adaptacyjny i korekcja dryfu zegarów.
+//! Adres nadal podaje się ręcznie — wykrywanie mDNS, parowanie i okno
+//! dochodzą w M4.
 
 mod recv;
 mod send;
@@ -45,6 +46,14 @@ enum Command {
         /// Wzmocnienie w decybelach, dodatnie podbija cichy mikrofon.
         #[arg(long, default_value_t = 0.0, value_name = "dB")]
         gain_db: f32,
+
+        /// Przepływność Opusa. 24 kbps jest przezroczyste dla mowy.
+        #[arg(long, default_value_t = 24_000, value_name = "bps")]
+        bitrate: u32,
+
+        /// Diagnostyka: gub celowo tyle procent pakietów, żeby sprawdzić FEC.
+        #[arg(long, default_value_t = 0.0, value_name = "PCT")]
+        drop_pct: f32,
     },
 
     /// Odbieraj mikrofon i wpuszczaj go w wirtualne urządzenie.
@@ -57,9 +66,13 @@ enum Command {
         #[arg(long, default_value = "auto", value_name = "URZĄDZENIE")]
         sink: String,
 
-        /// Głębokość bufora jitter. Mniej = niższe opóźnienie, więcej trzasków.
+        /// Startowa głębokość bufora jitter.
         #[arg(long, default_value_t = 30, value_name = "MS")]
         buffer_ms: u32,
+
+        /// Nie dopasowuj poduszki do jakości łącza — trzymaj zadaną wartość.
+        #[arg(long)]
+        fixed_buffer: bool,
     },
 }
 
@@ -73,12 +86,15 @@ fn main() -> Result<()> {
             to,
             device,
             gain_db,
-        } => send::run(&to, &device, gain_db),
+            bitrate,
+            drop_pct,
+        } => send::run(&to, &device, gain_db, bitrate, drop_pct),
         Command::Recv {
             listen,
             sink,
             buffer_ms,
-        } => recv::run(&listen, &sink, buffer_ms),
+            fixed_buffer,
+        } => recv::run(&listen, &sink, buffer_ms, !fixed_buffer),
     }
 }
 
@@ -122,11 +138,15 @@ fn list_devices() -> Result<()> {
                 .channels
                 .map(|c| format!("{c} ch"))
                 .unwrap_or_else(|| "?".into());
-            let virtual_hint = mb_audio::VIRTUAL_SINK_HINTS
+            let lowered = d.name.to_lowercase();
+            let virtual_hint = if mb_audio::VIRTUAL_SINK_HINTS
                 .iter()
-                .any(|h| d.name.to_lowercase().contains(h))
-                .then_some("  ← wirtualny kabel")
-                .unwrap_or("");
+                .any(|h| lowered.contains(h))
+            {
+                "  ← wirtualny kabel"
+            } else {
+                ""
+            };
 
             println!(
                 "{marker} @{:<2} {:<48} {:>9}  {:>6}{}",
@@ -137,7 +157,7 @@ fn list_devices() -> Result<()> {
 
     println!(
         "\n* = domyślne w systemie.  Silnik pracuje przy {SAMPLE_RATE} Hz — \
-         urządzenie musi je obsługiwać (M1)."
+         inne częstotliwości są przeliczane."
     );
     println!("Wskazywanie: --device \"yeti\" albo --device @3");
     println!(
