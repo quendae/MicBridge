@@ -19,7 +19,7 @@ produkt — wykrywania w sieci, parowania i okna.
 | M0 | weryfikacja łańcucha bez kodu (VBAN) | pominięte — zastąpione `--device tone` |
 | M1 | PCM po UDP, wybór urządzeń, bufor jitter, kanał sterujący | **gotowe** |
 | M2 | Opus, FEC, bufor adaptacyjny, korekcja dryfu, resampling | **gotowe** |
-| M3 | wirtualne wejście: node PipeWire, wykrywanie VB-CABLE | **kod gotowy**, strona linuksowa czeka na test na sprzęcie |
+| M3 | wirtualne wejście: node PipeWire, wykrywanie VB-CABLE | **gotowe** — sprawdzone na Archu (PipeWire 1.6) i Windows 10 |
 | M4 | mDNS, parowanie SPAKE2, okno egui | |
 | M5 | pakiety deb/rpm/AUR/Flatpak/MSI | |
 
@@ -125,10 +125,6 @@ Poniżej Arch (i pochodne, m.in. Omarchy — PipeWire i Wireplumber są tam
 domyślne, więc nic nie trzeba przestawiać). Dla innych rodzin dystrybucji
 pakiety są w sekcji [Budowanie](#linux).
 
-> Dopóki [PR #1](https://github.com/quendae/MicBridge/pull/1) nie jest
-> wmergowany, wirtualny mikrofon żyje na gałęzi — po sklonowaniu zrób
-> `git checkout m3-wirtualne-wejscie`.
-
 ### 1. Zależności i budowanie
 
 ```bash
@@ -191,8 +187,9 @@ Powinien być czysty ton 440 Hz, bez trzasków i przerw. To sprawdza cały
 łańcuch: kodowanie, sieć, bufor jitter, resampling i wirtualne wejście.
 
 Odbiornik wypisuje co sekundę stan bufora, straty i korektę dryfu. Przy pętli
-lokalnej bufor ma stanąć na zadanych 30 ms, straty na zerze, a korekta dryfu
-zejść w okolice zera w kilkanaście sekund.
+lokalnej `cel` ma zostać na 30 ms, straty na zerze, a korekta dryfu zejść
+w okolice zera w kilkanaście sekund. Zanim odpalisz `pw-record`, w tym samym
+miejscu stoi `czekam` — nikt jeszcze nie słucha naszego mikrofonu.
 
 ### 4. Odporność na straty
 
