@@ -28,19 +28,39 @@ use mb_proto::{
 };
 
 const RING_SAMPLES: usize = SAMPLE_RATE as usize;
-/// Ile dźwięku trzymać przed callbackiem. Dwie ramki wystarczą, żeby nie
-/// zagłodzić karty. To jest stałe opóźnienie lokalne, nie bufor sieciowy —
-/// dlatego regulator dryfu celuje w głębokość bufora jitter, a nie w sumę.
-const RING_TARGET: usize = FRAME_SAMPLES * 2;
+/// Dolna granica zapasu przed callbackiem — dwie ramki.
+///
+/// Górna bierze się z tego, o ile karta faktycznie prosi. Stały zapas dwóch
+/// ramek wystarczał przy WASAPI, ale PipeWire potrafi wołać o sto milisekund
+/// naraz: wtedy każde wywołanie dostawało 20 ms dźwięku i 80 ms ciszy, a bufor
+/// jitter puchł do sufitu, bo pacer dolewał tylko do własnego progu.
+const RING_MIN: usize = FRAME_SAMPLES * 2;
+/// Ile razy większy zapas trzymać niż największa zaobserwowana porcja.
+const RING_HEADROOM: usize = 2;
+/// Ile zapasu założyć, zanim ujście pierwszy raz powie, o ile prosi.
+///
+/// Cały pierścień musi się nazbierać, zanim karta zacznie pobierać — potem
+/// produkcja równa się konsumpcji i poziom już nie rośnie. Zakładamy więc
+/// hojnie; nadmiar leci przy przycięciu po napełnieniu potoku i nie kosztuje
+/// ani milisekundy opóźnienia.
+const RING_ASSUMED_MS: usize = 100;
 /// Górna granica bufora jitter — powyżej wolimy uciąć niż rosnąć.
 const MAX_BUFFER_MS: u32 = 400;
 /// Dolna granica poduszki: jedna ramka nie przetrwa żadnego przestawienia.
 const MIN_BUFFER_FRAMES: usize = 2;
+/// Po tylu milisekundach bez wywołania uznajemy, że ujścia nikt nie słucha.
+///
+/// W Linuksie węzeł istnieje od razu, ale PipeWire uruchamia nasz callback
+/// dopiero, gdy ktoś się do niego podepnie. Bez tego progu pakiety piętrzyły
+/// się do sufitu bufora, zanim użytkownik zdążył wybrać mikrofon w aplikacji.
+const SINK_IDLE_MS: u64 = 250;
 
 pub fn run(listen: &str, sink: &str, buffer_ms: u32, adaptive: bool) -> Result<()> {
     let listen_addr: SocketAddr = listen
         .parse()
         .with_context(|| format!("`{listen}` nie jest adresem nasłuchu"))?;
+
+    mb_audio::sink::validate(sink)?;
 
     let target_frames = (buffer_ms / FRAME_MS).max(1) as usize;
     let max_frames = (MAX_BUFFER_MS / FRAME_MS) as usize;
@@ -121,17 +141,19 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
     let rb = HeapRb::<f32>::new(RING_SAMPLES);
     let (mut producer, mut consumer) = rb.split();
     let starved = Arc::new(AtomicU64::new(0));
-    // Karta dźwiękowa rusza z opóźnieniem rzędu sekundy. Gdyby pacer zaczął
-    // wtedy opróżniać bufor, przycięcie poduszki wypadłoby przed startem
-    // urządzenia i cały nadmiar zebrany w międzyczasie zostałby na stałe —
-    // regulator dryfu ściągałby go potem kilkanaście sekund.
-    let playback_started = Arc::new(AtomicBool::new(false));
-
-    let playback = {
+    // Licznik wywołań ujścia. Jego brak ruchu znaczy, że po drugiej stronie
+    // nikt nie słucha — patrz `SINK_IDLE_MS`.
+    let served = Arc::new(AtomicU64::new(0));
+    // Największa porcja, o jaką poprosiło ujście. Pacer trzyma pierścień
+    // powyżej tej wartości, bo inaczej nie ma szans jej pokryć.
+    let request = Arc::new(AtomicU64::new(RING_MIN as u64));
+    let sink = {
         let starved = Arc::clone(&starved);
-        let playback_started = Arc::clone(&playback_started);
-        mb_audio::start_playback(cfg.sink, SAMPLE_RATE, move |out| {
-            playback_started.store(true, Ordering::Relaxed);
+        let served = Arc::clone(&served);
+        let request = Arc::clone(&request);
+        mb_audio::open_sink(cfg.sink, SAMPLE_RATE, move |out| {
+            served.fetch_add(1, Ordering::Relaxed);
+            request.fetch_max(out.len() as u64, Ordering::Relaxed);
             let got = consumer.pop_slice(out);
             if got < out.len() {
                 out[got..].fill(0.0);
@@ -139,11 +161,11 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
             }
         })?
     };
-    let device_rate = playback.sample_rate;
+    let device_rate = sink.sample_rate();
     tracing::info!(
-        device = %playback.device_name,
-        channels = playback.channels,
+        sink = %sink.name(),
         rate = device_rate,
+        wejscie = sink.is_input_device(),
         "ujście otwarte"
     );
 
@@ -157,23 +179,27 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
         version: PROTOCOL_VERSION,
         ssrc,
         media_port: MEDIA_PORT,
-        sink: playback.device_name.clone(),
+        sink: sink.name().to_string(),
         host: hostname(),
     })
     .write_to(&mut control)?;
 
-    println!(
-        "\n{} ({}) → {}\n  źródło: {}{}",
-        hello.host,
-        peer.ip(),
-        playback.device_name,
-        hello.device,
-        if device_rate == SAMPLE_RATE {
-            String::new()
-        } else {
-            format!("\n  konwersja {SAMPLE_RATE} Hz → {device_rate} Hz")
+    println!("\n{} ({}) → {}", hello.host, peer.ip(), sink.name());
+    println!("  źródło: {}", hello.device);
+    if device_rate != SAMPLE_RATE {
+        println!("  konwersja {SAMPLE_RATE} Hz → {device_rate} Hz");
+    }
+    if sink.is_input_device() {
+        println!(
+            "  w aplikacji (Discord, OBS, gra) wybierz mikrofon „{}”",
+            mb_audio::DISPLAY_NAME
+        );
+    } else {
+        println!("  w aplikacji wybierz mikrofon odpowiadający temu urządzeniu");
+        if let Some(hint) = mb_audio::latency_hint(sink.name()) {
+            println!("  {hint}");
         }
-    );
+    }
 
     let jitter = Arc::new(Mutex::new(JitterBuffer::new(
         cfg.target_frames,
@@ -249,7 +275,8 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
         let running = Arc::clone(running);
         let ring_samples = Arc::clone(&ring_samples);
         let shared = Arc::clone(&shared);
-        let playback_started = Arc::clone(&playback_started);
+        let served = Arc::clone(&served);
+        let request = Arc::clone(&request);
         let adaptive = cfg.adaptive;
         let start_frames = cfg.target_frames;
         let max_frames = cfg.max_frames;
@@ -262,7 +289,8 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
                 &running,
                 &ring_samples,
                 &shared,
-                &playback_started,
+                &served,
+                &request,
                 device_rate,
                 adaptive,
                 start_frames,
@@ -276,6 +304,7 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
 
     // --- raportowanie -------------------------------------------------------
     let mut last = Instant::now();
+    let mut seen_overflow = 0u64;
     while running.load(Ordering::Relaxed) && live.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(100));
         if last.elapsed() < Duration::from_secs(1) {
@@ -283,15 +312,33 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
         }
         last = Instant::now();
 
-        let (depth, loss, late, recovered, stalls) = {
+        let (depth, loss, late, recovered, stalls, overflow) = {
             let Ok(jb) = jitter.lock() else { break };
-            (jb.depth(), jb.loss_pct(), jb.late, jb.recovered, jb.stalls)
+            (
+                jb.depth(),
+                jb.loss_pct(),
+                jb.late,
+                jb.recovered,
+                jb.stalls,
+                jb.dropped_overflow,
+            )
         };
         let ring_ms = ring_samples.load(Ordering::Relaxed) as f32 * 1000.0 / device_rate as f32;
         let jitter_buf_ms = depth as f32 * FRAME_MS as f32;
         let starved_now = starved.swap(0, Ordering::Relaxed);
 
-        println!(
+        if shared.idle() {
+            seen_overflow = overflow;
+            if sink.is_input_device() {
+                println!(
+                    "  czekam — w aplikacji wybierz mikrofon „{}”",
+                    mb_audio::DISPLAY_NAME
+                );
+            } else {
+                println!("  czekam — nic jeszcze nie odtwarza z tego urządzenia");
+            }
+        } else {
+            println!(
             "  bufor {:>3.0}+{:>2.0} ms   cel {:>3.0}   strat {loss:>4.1}% (FEC {recovered})   \
              jitter {:>4.1} ms   dryf {:+.3}%{}",
             jitter_buf_ms,
@@ -299,12 +346,18 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
             shared.setpoint(),
             shared.jitter(),
             shared.correction() * 100.0,
-            if starved_now > 0 {
-                format!("   NIEDOMIAR {starved_now}")
-            } else {
-                String::new()
+            // Przepełnienie bufora nie liczy się jako strata pakietu, ale
+            // wyrzucone ramki słychać tak samo — bez tego licznika stan
+            // „strat 0,0%” towarzyszył rwącemu się dźwiękowi.
+            match (starved_now, overflow.saturating_sub(seen_overflow)) {
+                (0, 0) => String::new(),
+                (s, 0) => format!("   NIEDOMIAR {s}"),
+                (0, o) => format!("   WYRZUCONO {o} ramek (bufor pełny)"),
+                (s, o) => format!("   NIEDOMIAR {s}   WYRZUCONO {o}"),
             }
-        );
+            );
+            seen_overflow = overflow;
+        }
 
         let report = ControlMsg::Stats(Stats {
             lost_pct: loss,
@@ -341,7 +394,8 @@ fn pace<P: Producer<Item = f32> + Observer>(
     running: &AtomicBool,
     ring_samples: &AtomicU64,
     shared: &SharedStats,
-    playback_started: &AtomicBool,
+    served: &AtomicU64,
+    request: &AtomicU64,
     device_rate: u32,
     adaptive: bool,
     start_frames: usize,
@@ -362,24 +416,76 @@ fn pace<P: Producer<Item = f32> + Observer>(
     shared.set_setpoint(drift.setpoint_ms());
 
     let mut last_tick = Instant::now();
+    // Poduszkę przycinamy drugi raz, gdy pierścień jest już pełny — patrz
+    // `JitterBuffer::trim_to_target`.
+    let mut primed = false;
+    let mut playing_since: Option<Instant> = None;
     // Poduszkę podnoszą wyłącznie pakiety spóźnione i puste przebiegi — one
     // znaczą, że czekaliśmy za krótko. Zwykła strata nic o tym nie mówi.
     let mut seen_late = 0u64;
     let mut seen_stalls = 0u64;
 
+    let idle_after = Duration::from_millis(SINK_IDLE_MS);
+    let mut last_served = 0u64;
+    let mut last_served_at = Instant::now();
+
     while live.load(Ordering::Relaxed) && running.load(Ordering::Relaxed) {
-        // Dopóki urządzenie nie zażądało pierwszej próbki, nie ruszamy bufora:
-        // wtedy przycięcie poduszki wypadnie dokładnie na starcie odtwarzania,
-        // a nie przed nim. Pierwszy callback dostanie ciszę — jednej ramki
-        // nikt nie usłyszy, kilkunastu sekund nadmiarowego opóźnienia owszem.
-        if !playback_started.load(Ordering::Relaxed) {
-            std::thread::sleep(Duration::from_millis(2));
+        // Karta rusza z opóźnieniem rzędu sekundy, a wirtualne wejście czeka,
+        // aż ktoś wybierze je w aplikacji — może to być i kwadrans. W obu
+        // wypadkach nasz callback milczy i wszystko, co w tym czasie napłynie,
+        // jest bezużyteczne: dźwięk sprzed minuty nikogo nie interesuje.
+        // Trzymamy więc poduszkę przyciętą do celu, zamiast pozwolić jej
+        // spuchnąć do sufitu i zacząć wyrzucać ramki.
+        let now_served = served.load(Ordering::Relaxed);
+        if now_served != last_served {
+            last_served = now_served;
+            last_served_at = Instant::now();
+        }
+        if now_served == 0 || last_served_at.elapsed() > idle_after {
+            playing_since = None;
+            // Poziom, na którym trzymamy poduszkę w ciszy: cel plus tyle, ile
+            // trzeba będzie wlać w pierścień na starcie.
+            let hold = start_frames
+                + ring_frames(request, device_rate).max(RING_ASSUMED_MS / FRAME_MS as usize);
+            let (late, stalls) = {
+                let Ok(mut jb) = jitter.lock() else { break };
+                jb.trim_to(hold);
+                (jb.late, jb.stalls)
+            };
+            // Cisza po naszej stronie nie jest kłopotem sieci. Bez tego
+            // zerowania start odtwarzania rozdymał poduszkę i zostawała taka
+            // do końca sesji.
+            seen_late = late;
+            seen_stalls = stalls;
+            if adaptive {
+                target.reset(start_frames, Instant::now());
+                let wanted = target.frames() as f32 * FRAME_MS as f32;
+                drift.set_setpoint(wanted);
+                shared.set_setpoint(wanted);
+            }
+            drift.reset();
+            shared.set_correction(0.0);
+            shared.set_idle(true);
+            primed = false;
+            std::thread::sleep(Duration::from_millis(5));
             continue;
         }
+        shared.set_idle(false);
+        let playing_for = playing_since.get_or_insert_with(Instant::now).elapsed();
 
-        while producer.occupied_len() < RING_TARGET && producer.vacant_len() >= FRAME_SAMPLES * 2 {
+        let ring_target = ring_target(request);
+
+        while producer.occupied_len() < ring_target && producer.vacant_len() >= FRAME_SAMPLES * 2 {
             let popped = {
                 let Ok(mut jb) = jitter.lock() else { break };
+                // Zabieramy tylko nadwyżkę ponad cel. Poduszka ma zostać na
+                // miejscu — to ona daje spóźnionemu pakietowi czas dojść przed
+                // swoją kolejką. Opróżnianie jej do dna przy każdym wywołaniu
+                // karty kasowało całą ochronę przed przestawieniem i przy
+                // okazji zgłaszało pusty bufor jako przestój łącza.
+                if jb.playing() && jb.depth() < jb.target_frames() {
+                    break;
+                }
                 jb.pop()
             };
 
@@ -406,7 +512,27 @@ fn pace<P: Producer<Item = f32> + Observer>(
             producer.push_slice(&resampled);
         }
 
-        ring_samples.store(producer.occupied_len() as u64, Ordering::Relaxed);
+        let occupied = producer.occupied_len();
+        ring_samples.store(occupied as u64, Ordering::Relaxed);
+
+        // Zwykle potok napełnia się w ułamku sekundy; sekunda to bezpiecznik na
+        // wypadek, gdyby ujście wołało o więcej, niż zdążyliśmy nazbierać —
+        // inaczej utknęlibyśmy w rozruchu i adaptacja nigdy by nie ruszyła.
+        if !primed && (occupied >= ring_target || playing_for > Duration::from_secs(1)) {
+            primed = true;
+            if let Ok(mut jb) = jitter.lock() {
+                let dropped = jb.trim_to_target();
+                if dropped > 0 {
+                    tracing::debug!(dropped, "przycięto poduszkę po napełnieniu potoku");
+                }
+                // Zanim pierścień się napełnił, pustki w poduszce były w
+                // porządku — to trwał rozruch, nie kłopot łącza. Liczniki
+                // zaczynają się liczyć dopiero stąd.
+                seen_late = jb.late;
+                seen_stalls = jb.stalls;
+            }
+            drift.reset();
+        }
 
         // Regulacja co 20 ms; szybciej nie ma sensu przy stałej czasowej 2 s.
         let dt = last_tick.elapsed();
@@ -418,7 +544,7 @@ fn pace<P: Producer<Item = f32> + Observer>(
                 (jb.depth(), jb.playing(), jb.late, jb.stalls)
             };
 
-            if adaptive && (late > seen_late || stalls > seen_stalls) {
+            if adaptive && primed && (late > seen_late || stalls > seen_stalls) {
                 target.on_late(Instant::now());
             }
             seen_late = late;
@@ -454,6 +580,20 @@ fn pace<P: Producer<Item = f32> + Observer>(
     Ok(())
 }
 
+/// Zapas skrojony pod rzeczywistą porcję, o jaką woła ujście. Połowa
+/// pierścienia to twardy sufit, żeby przy absurdalnym kwancie nie próbować
+/// trzymać więcej, niż się mieści.
+fn ring_target(request: &AtomicU64) -> usize {
+    (request.load(Ordering::Relaxed) as usize * RING_HEADROOM).clamp(RING_MIN, RING_SAMPLES / 2)
+}
+
+/// Ten sam zapas wyrażony w ramkach strumienia — pierścień liczy próbki w
+/// częstotliwości urządzenia, poduszka liczy ramki po 10 ms.
+fn ring_frames(request: &AtomicU64, device_rate: u32) -> usize {
+    let ms = ring_target(request) as f32 * 1000.0 / device_rate as f32;
+    (ms / FRAME_MS as f32).ceil() as usize
+}
+
 /// Liczniki dzielone między wątkami. f32 trzymane w bitach, bo `AtomicF32`
 /// nie istnieje w bibliotece standardowej.
 #[derive(Default)]
@@ -461,6 +601,9 @@ struct SharedStats {
     jitter_ms: AtomicU64,
     correction: AtomicU64,
     setpoint_ms: AtomicU64,
+    /// Ujście nie prosi o próbki: albo karta jeszcze nie ruszyła, albo nikt
+    /// nie wybrał naszego wirtualnego mikrofonu.
+    idle: AtomicBool,
 }
 
 impl SharedStats {
@@ -482,6 +625,12 @@ impl SharedStats {
     }
     fn setpoint(&self) -> f32 {
         f32::from_bits(self.setpoint_ms.load(Ordering::Relaxed) as u32)
+    }
+    fn set_idle(&self, v: bool) {
+        self.idle.store(v, Ordering::Relaxed);
+    }
+    fn idle(&self) -> bool {
+        self.idle.load(Ordering::Relaxed)
     }
 }
 

@@ -346,7 +346,7 @@ odpowiada realnej zależności, nie atrakcyjności zadań.
 | **M0** | Weryfikacja łańcucha bez pisania kodu (VBAN → VB-CABLE). | pominięte — zastąpione generatorem `--device tone` |
 | **M1** | Surowy PCM przez UDP, ręcznie podany adres, wybór urządzeń, bufor jitter, kanał sterujący. | **gotowe** |
 | **M2** | Opus, FEC, bufor adaptacyjny, korekcja dryfu, resampling. Kryterium wyjścia: osiem godzin bez narostu opóźnienia i bez trzasków przy 2% strat. | **gotowe** |
-| **M3** | Wirtualne wejście po obu stronach: node PipeWire w Linuksie, wykrywanie kabla w Windows wraz z ekranem prowadzącym do instalatora. Od tego etapu program jest użyteczny dla kogoś innego niż autor. | następne |
+| **M3** | Wirtualne wejście po obu stronach: node PipeWire w Linuksie, wykrywanie kabla w Windows wraz z komunikatem prowadzącym do instalatora. Od tego etapu program jest użyteczny dla kogoś innego niż autor. | **kod gotowy**; strona linuksowa przeszła kompilację w CI, ale czeka na uruchomienie na sprzęcie |
 | **M4** | Wykrywanie mDNS, parowanie SPAKE2, szyfrowanie, okno egui z miernikiem poziomu, autostart i zasobnik. To etap, w którym powstaje właściwy produkt — wszystko wcześniejsze było silnikiem. | |
 | **M5** | Pakiety deb, rpm, AUR, Flatpak, MSI, podpisy, reguły zapory. Test na czystych maszynach: instalacja przez kogoś, kto nie czytał tego dokumentu, jest jedynym miarodajnym sprawdzianem §1. | |
 

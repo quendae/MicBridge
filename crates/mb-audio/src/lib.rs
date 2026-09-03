@@ -7,11 +7,18 @@
 //! Sample rate is a preference, not a demand: the handle reports what the
 //! device actually gave, and the engine resamples the difference away.
 
+#[cfg(target_os = "linux")]
+pub mod pipewire_source;
+pub mod sink;
+
 use anyhow::{anyhow, bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, SampleRate, StreamConfig, SupportedStreamConfig};
 
 pub use cpal::Stream;
+pub use sink::{
+    latency_hint, looks_like_virtual_cable, open_sink, Sink, DISPLAY_NAME, VIRTUAL_SINK_HINTS,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -38,17 +45,6 @@ pub struct DeviceInfo {
     pub default_sample_rate: Option<u32>,
     pub channels: Option<u16>,
 }
-
-/// Names that identify a virtual audio cable, in the order we prefer them.
-/// Matching is case-insensitive on a substring, because vendors append
-/// suffixes like "(VB-Audio Virtual Cable)" and localise nothing.
-pub const VIRTUAL_SINK_HINTS: &[&str] = &[
-    "cable input", // VB-CABLE
-    "voicemeeter input",
-    "voicemeeter aux input",
-    "line 1 (virtual audio cable)",
-    "micbridge", // our own PipeWire node on Linux
-];
 
 pub fn list(dir: Direction) -> Result<Vec<DeviceInfo>> {
     let host = cpal::default_host();
@@ -86,7 +82,6 @@ pub fn list(dir: Direction) -> Result<Vec<DeviceInfo>> {
 ///
 /// Accepted forms, in this order:
 ///   `default`     the system default
-///   `auto`        output only: the first known virtual cable
 ///   `@3`          index from `micbridge devices`
 ///   `yeti`        case-insensitive substring of the name
 ///
@@ -112,25 +107,6 @@ pub fn find(dir: Direction, selector: &str) -> Result<Device> {
         .iter()
         .map(|d| d.name().unwrap_or_default())
         .collect();
-
-    if selector.eq_ignore_ascii_case("auto") {
-        if dir != Direction::Output {
-            bail!("`auto` działa tylko dla urządzenia wyjściowego");
-        }
-        for hint in VIRTUAL_SINK_HINTS {
-            if let Some(i) = names.iter().position(|n| n.to_lowercase().contains(hint)) {
-                tracing::info!(device = %names[i], "wykryto wirtualny kabel");
-                return Ok(devices.into_iter().nth(i).expect("index from position"));
-            }
-        }
-        bail!(
-            "nie znaleziono wirtualnego urządzenia audio.\n\
-             Zainstaluj VB-CABLE (https://vb-audio.com/Cable/) i uruchom ponownie,\n\
-             albo wskaż urządzenie ręcznie: --sink \"<fragment nazwy>\".\n\
-             Widoczne urządzenia wyjściowe:\n  {}",
-            names.join("\n  ")
-        );
-    }
 
     if let Some(rest) = selector.strip_prefix('@') {
         let idx: usize = rest

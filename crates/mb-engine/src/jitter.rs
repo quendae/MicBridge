@@ -166,6 +166,41 @@ impl JitterBuffer {
         }
     }
 
+    /// Zrzuca nadmiar ponad cel, przeskakując do najświeższych ramek.
+    ///
+    /// Do wywołania raz, gdy potok jest już napełniony. Pierścień przed kartą
+    /// trzyma wtedy ciągły dźwięk, więc przeskok w strumieniu jest sklejką,
+    /// a nie dziurą — inaczej niż w środku sesji, gdzie by trzasnęło.
+    ///
+    /// Prefill przycina poduszkę wcześniej, ale między nim a napełnieniem
+    /// pierścienia zdąży napłynąć tyle pakietów, ile trwa rozruch karty; bez
+    /// tego drugiego przycięcia regulator dryfu ściągałby ten nadmiar
+    /// kilkadziesiąt sekund.
+    pub fn trim_to_target(&mut self) -> usize {
+        self.trim_to(self.target_frames)
+    }
+
+    /// To samo, ale do poziomu podanego z zewnątrz.
+    ///
+    /// Zanim odtwarzanie ruszy, poduszka musi wystarczyć nie tylko na sieć,
+    /// ale i na napełnienie pierścienia przed kartą — ten zapas przechodzi do
+    /// pierścienia w chwili startu. Przycięcie do samego celu zostawiłoby
+    /// pierścień pusty i strumień zacząłby się od serii przestojów.
+    pub fn trim_to(&mut self, frames: usize) -> usize {
+        let level = frames.clamp(1, self.max_frames);
+        let mut dropped = 0;
+        while self.slots.len() > level {
+            let oldest = *self.slots.keys().next().expect("len > target >= 1");
+            self.slots.remove(&oldest);
+            self.trimmed += 1;
+            dropped += 1;
+        }
+        if let Some(&first) = self.slots.keys().next() {
+            self.next_out = Some(first);
+        }
+        dropped
+    }
+
     /// Holes as a percentage of frames that should have played. Frames rebuilt
     /// by FEC count too — they were lost on the wire, the listener just did not
     /// hear it, and the encoder still needs to know.
@@ -242,6 +277,16 @@ impl AdaptiveTarget {
         }
         self.current = (self.current + 2).min(self.max);
         self.last_grow = Some(now);
+    }
+
+    /// Wraca do stanu wyjściowego. Wołane, gdy sesja rusza od nowa — na
+    /// przykład gdy aplikacja dopiero otworzyła mikrofon. Poduszka urosła
+    /// wtedy z powodu ciszy po naszej stronie, a nie kłopotów w sieci, i
+    /// niesiona dalej byłaby czystym opóźnieniem.
+    pub fn reset(&mut self, start_frames: usize, now: Instant) {
+        self.current = start_frames.clamp(self.min, self.max);
+        self.clean_since = now;
+        self.last_grow = None;
     }
 
     /// Call periodically. Returns true when the target changed.
@@ -352,6 +397,40 @@ mod tests {
     }
 
     #[test]
+    fn trimming_after_priming_skips_ahead_without_counting_losses() {
+        let mut jb = JitterBuffer::new(3, 40);
+        for i in 0..4 {
+            jb.push(i, pkt(i as u8));
+        }
+        assert_eq!(jb.pop(), Pop::Packet(pkt(1)), "prefill przycina do celu");
+
+        // Rozruch karty: zanim potok się napełnił, dopłynęło jeszcze dziesięć.
+        for i in 4..14 {
+            jb.push(i, pkt(i as u8));
+        }
+        assert_eq!(jb.trim_to_target(), 9);
+        assert_eq!(jb.depth(), 3);
+        assert_eq!(
+            jb.pop(),
+            Pop::Packet(pkt(11)),
+            "gramy najświeższe, nie stare"
+        );
+        assert_eq!(jb.lost, 0, "przeskok to nie strata");
+    }
+
+    #[test]
+    fn trimming_a_buffer_at_target_does_nothing() {
+        let mut jb = JitterBuffer::new(3, 40);
+        for i in 0..3 {
+            jb.push(i, pkt(i as u8));
+        }
+        jb.pop();
+        let before = jb.depth();
+        assert_eq!(jb.trim_to_target(), 0);
+        assert_eq!(jb.depth(), before);
+    }
+
+    #[test]
     fn recovers_after_the_stream_stalls() {
         let mut jb = JitterBuffer::new(2, 10);
         jb.push(0, pkt(0));
@@ -435,5 +514,23 @@ mod tests {
             t += Duration::from_secs(1);
         }
         assert_eq!(a.frames(), 6);
+    }
+
+    #[test]
+    fn reset_undoes_growth_from_a_silent_start() {
+        let now = Instant::now();
+        let mut t = AdaptiveTarget::new(3, 2, 40);
+        for k in 0..5 {
+            t.on_late(now + Duration::from_millis(k * 600));
+        }
+        assert!(t.frames() > 3, "poduszka urosła");
+
+        // Kłopoty brały się stąd, że nikt nas jeszcze nie słuchał.
+        t.reset(3, now);
+        assert_eq!(t.frames(), 3);
+        // Zerowanie zdejmuje też blokadę tempa — pierwszy realny kłopot po
+        // wznowieniu ma zadziałać od razu.
+        t.on_late(now);
+        assert_eq!(t.frames(), 5);
     }
 }
