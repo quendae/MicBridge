@@ -3,6 +3,7 @@
 //! Etap M4: do silnika z M2 i wirtualnego wejścia z M3 dochodzi wykrywanie
 //! w sieci — adresu nie trzeba już znać. Parowanie i okno są w toku.
 
+mod pair;
 mod recv;
 mod send;
 
@@ -31,6 +32,16 @@ struct Cli {
 enum Command {
     /// Wypisz urządzenia audio widoczne w systemie.
     Devices,
+
+    /// Wypisz sparowane maszyny.
+    Peers,
+
+    /// Zapomnij parowanie z podaną maszyną.
+    Forget {
+        /// Nazwa z listy `peers`.
+        #[arg(value_name = "NAZWA")]
+        peer: String,
+    },
 
     /// Pokaż odbiorniki widoczne w sieci lokalnej.
     Discover {
@@ -61,6 +72,10 @@ enum Command {
         /// Diagnostyka: gub celowo tyle procent pakietów, żeby sprawdzić FEC.
         #[arg(long, default_value_t = 0.0, value_name = "PCT")]
         drop_pct: f32,
+
+        /// Kod parowania, gdy nie ma gdzie go wpisać (skrypty, usługi).
+        #[arg(long, value_name = "CYFRY")]
+        code: Option<String>,
     },
 
     /// Odbieraj mikrofon i wpuszczaj go w wirtualne urządzenie.
@@ -95,13 +110,23 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Devices => list_devices(),
         Command::Discover { window_ms } => discover(window_ms),
+        Command::Peers => list_peers(),
+        Command::Forget { peer } => forget_peer(&peer),
         Command::Send {
             to,
             device,
             gain_db,
             bitrate,
             drop_pct,
-        } => send::run(to.as_deref(), &device, gain_db, bitrate, drop_pct),
+            code,
+        } => send::run(
+            to.as_deref(),
+            &device,
+            gain_db,
+            bitrate,
+            drop_pct,
+            code.as_deref(),
+        ),
         Command::Recv {
             listen,
             sink,
@@ -150,6 +175,34 @@ fn discover(window_ms: u64) -> Result<()> {
         println!("  {:<24} {:<24}{note}", peer.name, peer.addr.to_string());
     }
     println!("\nWysyłanie: micbridge send --to \"{}\"", peers[0].name);
+    Ok(())
+}
+
+fn list_peers() -> Result<()> {
+    let store = mb_net::KeyStore::open()?;
+    let peers: Vec<&str> = store.peers().collect();
+    if peers.is_empty() {
+        println!("Nic jeszcze nie sparowane.");
+        println!("Parowanie dzieje się samo przy pierwszym połączeniu.");
+        return Ok(());
+    }
+    println!("SPAROWANE");
+    for peer in peers {
+        println!("  {peer}");
+    }
+    println!("\nKlucze: {}", store.path().display());
+    println!("Zapomnienie: micbridge forget <nazwa> — po obu stronach.");
+    Ok(())
+}
+
+fn forget_peer(peer: &str) -> Result<()> {
+    let mut store = mb_net::KeyStore::open()?;
+    if store.forget(peer)? {
+        println!("Zapomniane: „{peer}”.");
+        println!("Zrób to samo po drugiej stronie, inaczej nie dogadacie się bez kodu.");
+    } else {
+        println!("Nie mam nic zapisanego pod „{peer}”.");
+    }
     Ok(())
 }
 

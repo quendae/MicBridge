@@ -10,13 +10,14 @@
 use std::io::Write;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 
+use crate::pair::{establish, recv_secure, send_secure};
 use mb_engine::{OpusEncoder, VariableResampler};
 use mb_proto::{
     ControlMsg, Hello, PayloadKind, RtpHeader, CONTROL_PORT, FRAME_MS, FRAME_SAMPLES,
@@ -116,6 +117,7 @@ pub fn run(
     gain_db: f32,
     bitrate: u32,
     drop_pct: f32,
+    code: Option<&str>,
 ) -> Result<()> {
     let control_addr = match to {
         Some(target) => target_addr(target)?,
@@ -175,22 +177,30 @@ pub fn run(
         .with_context(|| format!("nie mogę połączyć się z {control_addr}"))?;
     control.set_nodelay(true)?;
 
-    ControlMsg::Hello(Hello {
-        version: PROTOCOL_VERSION,
-        payload: PayloadKind::Opus,
-        sample_rate: SAMPLE_RATE,
-        channels: 1,
-        frame_ms: FRAME_MS,
-        device: source_name.clone(),
-        host: mb_net::hostname(),
-    })
-    .write_to(&mut control)?;
+    // Od tego miejsca kanał jest zaszyfrowany. Uzgodnienie może po drodze
+    // poprosić o kod parowania.
+    let channel = Arc::new(Mutex::new(establish(&mut control, code)?));
 
-    let accept = match ControlMsg::read_from(&mut control)? {
+    send_secure(
+        &mut control,
+        &channel,
+        &ControlMsg::Hello(Hello {
+            version: PROTOCOL_VERSION,
+            payload: PayloadKind::Opus,
+            sample_rate: SAMPLE_RATE,
+            channels: 1,
+            frame_ms: FRAME_MS,
+            device: source_name.clone(),
+            host: mb_net::hostname(),
+        }),
+    )?;
+
+    let accept = match recv_secure(&mut control, &channel)? {
         ControlMsg::Accept(a) => a,
         ControlMsg::Reject { reason } => bail!("odbiornik odrzucił połączenie: {reason}"),
         other => bail!("nieoczekiwana odpowiedź na HELLO: {other:?}"),
     };
+    let cipher = mb_net::MediaCipher::new(&accept.media_key)?;
     if accept.version != PROTOCOL_VERSION {
         bail!(
             "niezgodna wersja protokołu: my {PROTOCOL_VERSION}, odbiornik {}",
@@ -221,9 +231,10 @@ pub fn run(
         let running = Arc::clone(&running);
         let reported_loss = Arc::clone(&reported_loss);
         let mut reader = control.try_clone()?;
+        let channel = Arc::clone(&channel);
         std::thread::spawn(move || {
             while running.load(Ordering::Relaxed) {
-                match ControlMsg::read_from(&mut reader) {
+                match recv_secure(&mut reader, &channel) {
                     Ok(ControlMsg::Stats(s)) => {
                         reported_loss.store(s.lost_pct.to_bits() as u64, Ordering::Relaxed);
                         tracing::debug!(
@@ -265,6 +276,7 @@ pub fn run(
     let mut packet = vec![0u8; RTP_HEADER_LEN + 1500];
 
     let mut seq: u16 = 0;
+    let mut ext_seq: u64 = 0;
     let mut timestamp: u32 = 0;
     let mut sent: u64 = 0;
     let mut bytes: u64 = 0;
@@ -297,12 +309,8 @@ pub fn run(
             }
             pending.drain(..FRAME_SAMPLES);
 
-            let payload_len = {
-                let encoded = encoder.encode(&pcm)?;
-                packet[RTP_HEADER_LEN..RTP_HEADER_LEN + encoded.len()].copy_from_slice(encoded);
-                encoded.len()
-            };
-
+            // Nagłówek powstaje przed szyfrowaniem, bo wchodzi w uwierzytelnienie:
+            // podmieniony numer sekwencyjny unieważnia pakiet po drugiej stronie.
             RtpHeader {
                 marker: sent == 0,
                 payload: PayloadKind::Opus,
@@ -312,6 +320,13 @@ pub fn run(
             }
             .encode_into(&mut packet)?;
 
+            let payload_len = {
+                let encoded = encoder.encode(&pcm)?;
+                let sealed = cipher.seal(ext_seq, &packet[..RTP_HEADER_LEN], encoded)?;
+                packet[RTP_HEADER_LEN..RTP_HEADER_LEN + sealed.len()].copy_from_slice(&sealed);
+                sealed.len()
+            };
+
             if !dropper.should_drop() {
                 if let Err(e) = socket.send(&packet[..RTP_HEADER_LEN + payload_len]) {
                     tracing::warn!(error = %e, "nie udało się wysłać ramki");
@@ -319,6 +334,9 @@ pub fn run(
             }
 
             seq = seq.wrapping_add(1);
+            // Wartość jednorazowa szyfrowania nie może się powtórzyć, więc
+            // liczymy pakiety w pełnych 64 bitach, nie w szesnastu z nagłówka.
+            ext_seq += 1;
             timestamp = timestamp.wrapping_add(FRAME_SAMPLES as u32);
             sent += 1;
             bytes += (RTP_HEADER_LEN + payload_len) as u64;

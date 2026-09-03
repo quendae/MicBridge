@@ -8,7 +8,7 @@ pub mod control;
 pub mod rtp;
 pub mod seq;
 
-pub use control::{Accept, ControlMsg, Hello, Stats};
+pub use control::{read_frame, write_frame, Accept, ControlMsg, Hello, Init, Stats};
 pub use rtp::{PayloadKind, RtpHeader, RTP_HEADER_LEN};
 pub use seq::SeqExtender;
 
@@ -18,7 +18,11 @@ pub const CONTROL_PORT: u16 = 47100;
 pub const MEDIA_PORT: u16 = 47101;
 
 /// Bumped on any incompatible change to the control protocol.
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// 2: sesja zaczyna się od rozpoznania i parowania, a media są szyfrowane.
+/// Starszy nadajnik nie ma jak się dogadać z nowszym odbiornikiem, więc
+/// rozbieżność wyłapujemy już na liście w `discover`.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Everything in the engine runs at this rate; devices that disagree are resampled.
 pub const SAMPLE_RATE: u32 = 48_000;

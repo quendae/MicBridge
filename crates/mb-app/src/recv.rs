@@ -98,6 +98,10 @@ pub fn run(listen: &str, sink: &str, buffer_ms: u32, adaptive: bool, announce: b
         }
     );
 
+    // Kod parowania żyje tak długo jak proces, nie jak połączenie: użytkownik
+    // przepisuje go z tego ekranu i ma mieć czas się pomylić.
+    let pairing = Mutex::new(crate::pair::Pairing::new());
+
     let running = Arc::new(AtomicBool::new(true));
     {
         let running = Arc::clone(&running);
@@ -117,7 +121,7 @@ pub fn run(listen: &str, sink: &str, buffer_ms: u32, adaptive: bool, announce: b
                     max_frames,
                     adaptive,
                 };
-                if let Err(e) = session(control, &cfg, &running) {
+                if let Err(e) = session(control, &cfg, &running, &pairing) {
                     tracing::error!(error = %e, "sesja zakończona błędem");
                 }
                 if !running.load(Ordering::Relaxed) {
@@ -138,22 +142,35 @@ struct SessionConfig<'a> {
     adaptive: bool,
 }
 
-fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool>) -> Result<()> {
+fn session(
+    mut control: TcpStream,
+    cfg: &SessionConfig,
+    running: &Arc<AtomicBool>,
+    pairing: &Mutex<crate::pair::Pairing>,
+) -> Result<()> {
     let peer = control.peer_addr()?;
     control.set_nodelay(true)?;
     tracing::info!(%peer, "połączenie przychodzące");
 
-    let hello = match ControlMsg::read_from(&mut control)? {
+    // Rozpoznanie i ewentualne parowanie idą jawnie; wszystko dalej już nie.
+    let (channel, peer_name) = crate::pair::accept(&mut control, pairing)?;
+    let channel = Mutex::new(channel);
+    tracing::info!(%peer_name, "kanał sterujący zaszyfrowany");
+
+    let hello = match crate::pair::recv_secure(&mut control, &channel)? {
         ControlMsg::Hello(h) => h,
         other => bail!("oczekiwałem HELLO, dostałem {other:?}"),
     };
 
     if let Err(reason) = check(&hello) {
         tracing::warn!(%reason, "odrzucam");
-        let _ = ControlMsg::Reject {
-            reason: reason.clone(),
-        }
-        .write_to(&mut control);
+        let _ = crate::pair::send_secure(
+            &mut control,
+            &channel,
+            &ControlMsg::Reject {
+                reason: reason.clone(),
+            },
+        );
         bail!(reason);
     }
 
@@ -196,16 +213,26 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
     media.set_read_timeout(Some(Duration::from_millis(200)))?;
     let ssrc = fresh_ssrc();
 
-    ControlMsg::Accept(Accept {
-        version: PROTOCOL_VERSION,
-        ssrc,
-        media_port: MEDIA_PORT,
-        sink: sink.name().to_string(),
-        host: mb_net::hostname(),
-    })
-    .write_to(&mut control)?;
+    // Klucz mediów jest jednorazowy i jedzie zaszyfrowanym kanałem, więc nie
+    // ma tu żadnego stanu do uzgadniania — a nagrany ruch nie da się odtworzyć
+    // nawet komuś, kto później zdobędzie sekret z parowania.
+    let media_key = mb_net::fresh_media_key();
+    let cipher = mb_net::MediaCipher::new(&media_key)?;
 
-    println!("\n{} ({}) → {}", hello.host, peer.ip(), sink.name());
+    crate::pair::send_secure(
+        &mut control,
+        &channel,
+        &ControlMsg::Accept(Accept {
+            version: PROTOCOL_VERSION,
+            ssrc,
+            media_port: MEDIA_PORT,
+            sink: sink.name().to_string(),
+            host: mb_net::hostname(),
+            media_key: media_key.to_vec(),
+        }),
+    )?;
+
+    println!("\n{} ({}) → {}", peer_name, peer.ip(), sink.name());
     println!("  źródło: {}", hello.device);
     if device_rate != SAMPLE_RATE {
         println!("  konwersja {SAMPLE_RATE} Hz → {device_rate} Hz");
@@ -241,6 +268,7 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
             let mut extender = SeqExtender::new();
             let mut stats = StreamStats::new(FRAME_MS);
             let mut expected_ssrc = None;
+            let mut rejected = 0u64;
 
             while live.load(Ordering::Relaxed) && running.load(Ordering::Relaxed) {
                 let n = match media.recv(&mut buf) {
@@ -278,12 +306,33 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
                     continue;
                 }
 
-                let ext = extender.extend(header.seq);
+                // Numer sekwencyjny podglądamy, zamiast go od razu przyjąć:
+                // podrobiony pakiet nie może przesunąć licznika zawinięć, bo
+                // rozjechałby wartości jednorazowe prawdziwym pakietom.
+                let ext = extender.peek(header.seq);
+                let payload = match cipher.open(
+                    ext,
+                    &buf[..RTP_HEADER_LEN],
+                    &buf[RTP_HEADER_LEN..n],
+                ) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        rejected += 1;
+                        if rejected == 1 {
+                            tracing::warn!(
+                                    "pakiet nie przeszedł uwierzytelnienia — ktoś nadaje                                      na ten port albo druga strona ma inny klucz"
+                                );
+                        }
+                        continue;
+                    }
+                };
+                extender.extend(header.seq);
+
                 stats.on_packet(ext, Instant::now());
                 shared.set_jitter(stats.jitter_ms());
 
                 if let Ok(mut jb) = jitter.lock() {
-                    jb.push(ext, buf[RTP_HEADER_LEN..n].to_vec());
+                    jb.push(ext, payload);
                 }
             }
         })
@@ -386,7 +435,7 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
             buffer_ms: jitter_buf_ms + ring_ms,
             late_pct: late as f32,
         });
-        if report.write_to(&mut control).is_err() {
+        if crate::pair::send_secure(&mut control, &channel, &report).is_err() {
             tracing::info!("nadajnik się rozłączył");
             break;
         }
@@ -396,10 +445,13 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
     }
 
     live.store(false, Ordering::Relaxed);
-    let _ = ControlMsg::Bye {
-        reason: "koniec sesji".into(),
-    }
-    .write_to(&mut control);
+    let _ = crate::pair::send_secure(
+        &mut control,
+        &channel,
+        &ControlMsg::Bye {
+            reason: "koniec sesji".into(),
+        },
+    );
     let _ = net.join();
     let _ = pacer.join();
     Ok(())

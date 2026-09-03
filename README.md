@@ -20,11 +20,11 @@ produkt — wykrywania w sieci, parowania i okna.
 | M1 | PCM po UDP, wybór urządzeń, bufor jitter, kanał sterujący | **gotowe** |
 | M2 | Opus, FEC, bufor adaptacyjny, korekcja dryfu, resampling | **gotowe** |
 | M3 | wirtualne wejście: node PipeWire, wykrywanie VB-CABLE | **gotowe** — sprawdzone na Archu (PipeWire 1.6) i Windows 10 |
-| M4 | mDNS, parowanie SPAKE2, okno egui | |
+| M4 | mDNS, parowanie SPAKE2, szyfrowanie, okno egui | wykrywanie i parowanie **gotowe**, okno w toku |
 | M5 | pakiety deb/rpm/AUR/Flatpak/MSI | |
 
-Czego wciąż nie ma, świadomie: szyfrowania i parowania, wykrywania w sieci
-(adres wpisuje się ręcznie), okna.
+Czego wciąż nie ma: okna. Reszta obietnicy — „zainstaluj na obu, uruchom,
+działa” — jest na miejscu.
 
 ## Budowanie
 
@@ -64,12 +64,19 @@ cargo build --release
 # co widać w systemie
 micbridge devices
 
-# odbiornik — uruchamiany PIERWSZY, bo to on nasłuchuje
-micbridge recv --sink auto --buffer-ms 30
+# odbiornik — uruchamiany PIERWSZY, bo to on nasłuchuje i ogłasza się w sieci
+micbridge recv --sink auto
 
-# nadajnik
-micbridge send --to 192.168.1.40 --device "yeti"
+# nadajnik — bez adresu, sam znajdzie odbiornik w sieci
+micbridge send --device "yeti"
 ```
+
+Za pierwszym razem odbiornik pokaże sześciocyfrowy kod, a nadajnik poprosi
+o jego przepisanie. To jedyny moment, w którym trzeba cokolwiek zrobić ręcznie
+— potem obie maszyny łączą się same.
+
+Gdy w sieci stoi więcej niż jeden odbiornik, nadajnik wypisze je i poprosi
+o wskazanie: `--to "salon"` albo `--to 192.168.1.40`.
 
 Urządzenie nie musi pracować przy 48 kHz — różnicę zdejmuje resampler po tej
 stronie, która jej potrzebuje.
@@ -82,6 +89,10 @@ Przydatne flagi:
 | `send --gain-db 6` | cichy mikrofon |
 | `send --drop-pct 5` | diagnostyka: gub celowo pakiety i patrz, czy FEC nadąża |
 | `recv --fixed-buffer` | trzymaj zadaną poduszkę zamiast dopasowywać ją do łącza |
+| `discover` | pokaż odbiorniki widoczne w sieci |
+| `peers` / `forget <nazwa>` | co jest sparowane i jak to cofnąć |
+| `send --code 482193` | kod parowania bez pytania — do skryptów i usług |
+| `recv --no-announce` | nie ogłaszaj się; adres podaje się wtedy ręcznie |
 
 ### Ujście, czyli gdzie ląduje dźwięk
 
@@ -314,6 +325,33 @@ zapas na kaprysy sieci.
   zobaczy „MicBridge” dopiero po odświeżeniu listy. Do rozstrzygnięcia w M4,
   gdy dojdzie okno: wtedy węzeł może istnieć przez cały czas, kiedy odbiór jest
   włączony.
+
+## Bezpieczeństwo
+
+Sieć domowa nie jest zaufana — dość, że ktoś jest na tym samym Wi-Fi. Dlatego:
+
+* **Parowanie odbywa się raz, kodem z ekranu.** Sześć cyfr to za mało na klucz,
+  ale SPAKE2 nie pozwala ich łamać offline: podsłuchujący, który nagra całą
+  wymianę, nie ma z czego zgadywać w domu. Musi trafić za pierwszym razem, na
+  żywo — a po trzech pudłach odbiornik losuje nowy kod.
+* **Każda sesja ma własne klucze.** Wspólny sekret z parowania służy tylko do
+  uwierzytelnienia; właściwe klucze uzgadnia Noise `NNpsk0` przy każdym
+  połączeniu. Nagrany ruch zostaje nieczytelny nawet dla kogoś, kto później
+  zdobędzie plik z kluczami.
+* **Dźwięk jest szyfrowany i uwierzytelniony.** Każdy pakiet osobno, bo po UDP
+  giną i przestawiają się. Nagłówek RTP zostaje jawny — bufor jitter musi go
+  czytać przed odszyfrowaniem — ale wchodzi w uwierzytelnienie, więc podmiana
+  numeru unieważnia pakiet. Kosztuje to 16 bajtów na pakiet, czyli przy
+  ramkach 10 ms około 13 kbps: 46 kbps zamiast 33.
+* **Nazwy maszyn niczego nie potwierdzają.** Służą wyłącznie do znalezienia
+  klucza; podszycie się pod cudzą nazwę nic nie daje, bo klucza to nie dostarcza.
+
+Klucze leżą w `peers.toml` w katalogu konfiguracyjnym użytkownika
+(`micbridge peers` pokaże ścieżkę), w Linuksie z prawami `600`.
+
+Czego to nie chroni: nikt nie sprawdza, czy maszyna, z którą się sparowałeś,
+jest tą, o której myślisz — kod przepisuje człowiek z ekranu, który ma przed
+sobą, i to jest cała weryfikacja tożsamości.
 
 ## Licencja
 
