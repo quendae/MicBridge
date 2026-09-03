@@ -18,12 +18,12 @@ gotowy; brakuje wszystkiego, co czyni z tego produkt.
 | M0 | weryfikacja łańcucha bez kodu (VBAN) | pominięte — zastąpione `--device tone` |
 | M1 | PCM po UDP, wybór urządzeń, bufor jitter, kanał sterujący | **gotowe** |
 | M2 | Opus, FEC, bufor adaptacyjny, korekcja dryfu, resampling | **gotowe** |
-| M3 | wirtualne wejście: node PipeWire, wykrywanie VB-CABLE | następne |
+| M3 | wirtualne wejście: node PipeWire, wykrywanie VB-CABLE | **kod gotowy**, strona linuksowa czeka na test na sprzęcie |
 | M4 | mDNS, parowanie SPAKE2, okno egui | |
 | M5 | pakiety deb/rpm/AUR/Flatpak/MSI | |
 
 Czego wciąż nie ma, świadomie: szyfrowania i parowania, wykrywania w sieci
-(adres wpisuje się ręcznie), tworzenia wirtualnego wejścia w Linuksie, okna.
+(adres wpisuje się ręcznie), okna.
 
 ## Budowanie
 
@@ -41,13 +41,17 @@ cargo build --release
 Potrzebne nagłówki ALSA — cpal buduje się na nich niezależnie od tego, że
 docelowo pracujemy przez PipeWire:
 
+Nagłówki ALSA są potrzebne, bo cpal linkuje się z nimi niezależnie od tego, że
+docelowo pracujemy przez PipeWire. Nagłówki PipeWire i libclang idą do
+wirtualnego mikrofonu — `pipewire-rs` generuje wiązania w czasie budowania.
+
 ```bash
 # Debian / Ubuntu
-sudo apt install build-essential pkg-config libasound2-dev
+sudo apt install build-essential pkg-config libasound2-dev libpipewire-0.3-dev libclang-dev
 # Fedora
-sudo dnf install gcc pkgconf-pkg-config alsa-lib-devel
+sudo dnf install gcc pkgconf-pkg-config alsa-lib-devel pipewire-devel clang-devel
 # Arch
-sudo pacman -S base-devel alsa-lib
+sudo pacman -S base-devel alsa-lib pipewire clang
 
 cargo build --release
 ```
@@ -77,8 +81,25 @@ Przydatne flagi:
 | `send --drop-pct 5` | diagnostyka: gub celowo pakiety i patrz, czy FEC nadąża |
 | `recv --fixed-buffer` | trzymaj zadaną poduszkę zamiast dopasowywać ją do łącza |
 
-`--sink auto` szuka wirtualnego kabla po nazwie (VB-CABLE, VoiceMeeter, VAC).
-Póki M3 nie doda tworzenia węzła PipeWire, na Linuksie wskaż ujście ręcznie.
+### Ujście, czyli gdzie ląduje dźwięk
+
+To jedyne miejsce, w którym oba systemy różnią się naprawdę.
+
+| `--sink` | Linux | Windows |
+|---|---|---|
+| `auto` (domyślne) | tworzy własny mikrofon „MicBridge” w PipeWire | szuka wirtualnego kabla po nazwie |
+| `virtual` | to samo, wymuszone | odrzucane przy starcie |
+| `device` albo fragment nazwy | zwykłe urządzenie wyjściowe | zwykłe urządzenie wyjściowe |
+
+W Linuksie nie trzeba nic instalować: proces zgłasza się grafowi PipeWire jako
+źródło dźwięku i pojawia się na listach mikrofonów pod nazwą „MicBridge”.
+
+W Windows nie da się utworzyć urządzenia wejściowego bez sterownika trybu
+jądra z podpisem EV, więc potrzebny jest jednorazowo
+[VB-CABLE](https://vb-audio.com/Cable/) — piszemy do `CABLE Input`, aplikacja
+wybiera mikrofon `CABLE Output`. Po instalacji warto ustawić w
+`VBCABLE_ControlPanel.exe` parametr *Max Latency* na 2048 sampli; domyślne 7168
+dokłada około 130 ms, czyli więcej niż cała reszta łańcucha razem wzięta.
 
 ### Bez mikrofonu
 
