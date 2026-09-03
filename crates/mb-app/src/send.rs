@@ -10,13 +10,15 @@
 use std::io::Write;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 
+use crate::pair::{establish, recv_secure, send_secure};
+use crate::ui::{Reporter, SendStatus};
 use mb_engine::{OpusEncoder, VariableResampler};
 use mb_proto::{
     ControlMsg, Hello, PayloadKind, RtpHeader, CONTROL_PORT, FRAME_MS, FRAME_SAMPLES,
@@ -26,6 +28,11 @@ use mb_proto::{
 /// Sekunda dźwięku. Gdyby wątek sieciowy się zaciął, wolimy zgubić próbki niż
 /// rosnąć w nieskończoność.
 const RING_SAMPLES: usize = SAMPLE_RATE as usize;
+/// Ile czekamy na odpowiedzi z sieci. Pierwsza przychodzi zwykle w kilkadziesiąt
+/// milisekund, ale druga maszyna potrafi odezwać się później — a lista, która
+/// zmienia się pod palcami, jest gorsza niż lista, na którą się chwilę czeka.
+const DISCOVERY_WINDOW: Duration = Duration::from_millis(2500);
+
 /// Ile próbek naraz podajemy resamplerowi. Wielkość jest dowolna — dzięki temu
 /// nie musi dzielić częstotliwości urządzenia bez reszty.
 const RESAMPLE_CHUNK: usize = 480;
@@ -105,16 +112,45 @@ impl Dropper {
     }
 }
 
-pub fn run(to: &str, device: &str, gain_db: f32, bitrate: u32, drop_pct: f32) -> Result<()> {
-    let control_addr = resolve(to, CONTROL_PORT)?;
-    let gain = 10f32.powf(gain_db / 20.0);
+/// Jak ma pracowac nadajnik.
+#[derive(Debug, Clone)]
+pub struct Options {
+    /// Odbiornik: adres, `adres:port` albo nazwa z listy. `None` znaczy
+    /// "znajdz jedyny w sieci".
+    pub to: Option<String>,
+    /// Zrodlo: `default`, `@3`, fragment nazwy albo `tone`.
+    pub device: String,
+    pub gain_db: f32,
+    pub bitrate: u32,
+    /// Diagnostyka: ile procent pakietow gubic celowo.
+    pub drop_pct: f32,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            to: None,
+            device: "default".into(),
+            gain_db: 0.0,
+            bitrate: 24_000,
+            drop_pct: 0.0,
+        }
+    }
+}
+
+pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Result<()> {
+    let (device, bitrate, drop_pct) = (opts.device.as_str(), opts.bitrate, opts.drop_pct);
+    let control_addr = match opts.to.as_deref() {
+        Some(target) => target_addr(target, ui)?,
+        None => sole_peer(ui)?,
+    };
+    let gain = 10f32.powf(opts.gain_db / 20.0);
 
     // 1. Mikrofon najpierw — bez sensu zawracać głowę drugiej maszynie, jeśli
     //    lokalne urządzenie i tak nie działa.
     let rb = HeapRb::<f32>::new(RING_SAMPLES);
     let (mut producer, mut consumer) = rb.split();
     let overruns = Arc::new(AtomicU64::new(0));
-    let running = Arc::new(AtomicBool::new(true));
 
     let (_source, source_name, device_rate) = if device.eq_ignore_ascii_case(TONE_SELECTOR) {
         let running = Arc::clone(&running);
@@ -147,7 +183,7 @@ pub fn run(to: &str, device: &str, gain_db: f32, bitrate: u32, drop_pct: f32) ->
     let mut resampler = if device_rate == SAMPLE_RATE {
         None
     } else {
-        println!("Konwersja {device_rate} Hz → {SAMPLE_RATE} Hz.");
+        ui.line(&format!("Konwersja {device_rate} Hz → {SAMPLE_RATE} Hz."));
         Some(VariableResampler::new(
             SAMPLE_RATE as f64 / device_rate as f64,
             RESAMPLE_CHUNK,
@@ -161,22 +197,30 @@ pub fn run(to: &str, device: &str, gain_db: f32, bitrate: u32, drop_pct: f32) ->
         .with_context(|| format!("nie mogę połączyć się z {control_addr}"))?;
     control.set_nodelay(true)?;
 
-    ControlMsg::Hello(Hello {
-        version: PROTOCOL_VERSION,
-        payload: PayloadKind::Opus,
-        sample_rate: SAMPLE_RATE,
-        channels: 1,
-        frame_ms: FRAME_MS,
-        device: source_name.clone(),
-        host: hostname(),
-    })
-    .write_to(&mut control)?;
+    // Od tego miejsca kanał jest zaszyfrowany. Uzgodnienie może po drodze
+    // poprosić o kod parowania.
+    let channel = Arc::new(Mutex::new(establish(&mut control, ui)?));
 
-    let accept = match ControlMsg::read_from(&mut control)? {
+    send_secure(
+        &mut control,
+        &channel,
+        &ControlMsg::Hello(Hello {
+            version: PROTOCOL_VERSION,
+            payload: PayloadKind::Opus,
+            sample_rate: SAMPLE_RATE,
+            channels: 1,
+            frame_ms: FRAME_MS,
+            device: source_name.clone(),
+            host: mb_net::hostname(),
+        }),
+    )?;
+
+    let accept = match recv_secure(&mut control, &channel)? {
         ControlMsg::Accept(a) => a,
         ControlMsg::Reject { reason } => bail!("odbiornik odrzucił połączenie: {reason}"),
         other => bail!("nieoczekiwana odpowiedź na HELLO: {other:?}"),
     };
+    let cipher = mb_net::MediaCipher::new(&accept.media_key)?;
     if accept.version != PROTOCOL_VERSION {
         bail!(
             "niezgodna wersja protokołu: my {PROTOCOL_VERSION}, odbiornik {}",
@@ -203,15 +247,24 @@ pub fn run(to: &str, device: &str, gain_db: f32, bitrate: u32, drop_pct: f32) ->
     // 3. Statystyki z odbiornika czyta osobny wątek; ta sama wartość steruje
     //    tym, ile bitów koder przeznacza na FEC.
     let reported_loss = Arc::new(AtomicU64::new(0));
+    // Odbiornik zna opoznienie i jitter, nadajnik nie ma jak ich zmierzyc
+    // sam - pokazujemy wiec u siebie to, co przyszlo w statystykach.
+    let reported_latency = Arc::new(AtomicU64::new(0));
+    let reported_jitter = Arc::new(AtomicU64::new(0));
     {
         let running = Arc::clone(&running);
         let reported_loss = Arc::clone(&reported_loss);
+        let reported_latency = Arc::clone(&reported_latency);
+        let reported_jitter = Arc::clone(&reported_jitter);
         let mut reader = control.try_clone()?;
+        let channel = Arc::clone(&channel);
         std::thread::spawn(move || {
             while running.load(Ordering::Relaxed) {
-                match ControlMsg::read_from(&mut reader) {
+                match recv_secure(&mut reader, &channel) {
                     Ok(ControlMsg::Stats(s)) => {
                         reported_loss.store(s.lost_pct.to_bits() as u64, Ordering::Relaxed);
+                        reported_latency.store(s.buffer_ms.to_bits() as u64, Ordering::Relaxed);
+                        reported_jitter.store(s.jitter_ms.to_bits() as u64, Ordering::Relaxed);
                         tracing::debug!(
                             strat = format!("{:.1}%", s.lost_pct),
                             jitter = format!("{:.1} ms", s.jitter_ms),
@@ -237,12 +290,6 @@ pub fn run(to: &str, device: &str, gain_db: f32, bitrate: u32, drop_pct: f32) ->
         });
     }
 
-    {
-        let running = Arc::clone(&running);
-        ctrlc::set_handler(move || running.store(false, Ordering::Relaxed))
-            .context("nie mogę przechwycić Ctrl-C")?;
-    }
-
     // 4. Pętla wysyłkowa.
     let mut device_chunk = vec![0f32; RESAMPLE_CHUNK];
     // Próbki już w dziedzinie 48 kHz, czekające na złożenie w pełne ramki.
@@ -251,6 +298,7 @@ pub fn run(to: &str, device: &str, gain_db: f32, bitrate: u32, drop_pct: f32) ->
     let mut packet = vec![0u8; RTP_HEADER_LEN + 1500];
 
     let mut seq: u16 = 0;
+    let mut ext_seq: u64 = 0;
     let mut timestamp: u32 = 0;
     let mut sent: u64 = 0;
     let mut bytes: u64 = 0;
@@ -259,9 +307,11 @@ pub fn run(to: &str, device: &str, gain_db: f32, bitrate: u32, drop_pct: f32) ->
 
     let mut dropper = Dropper::new(drop_pct);
     if drop_pct > 0.0 {
-        println!("UWAGA: celowo gubię {drop_pct}% pakietów (tryb diagnostyczny).");
+        ui.line(&format!(
+            "UWAGA: celowo gubię {drop_pct}% pakietów (tryb diagnostyczny)."
+        ));
     }
-    println!("Nadaję Opusem, {} kbps. Ctrl-C kończy.", bitrate / 1000);
+    ui.line(&format!("Nadaję Opusem, {} kbps.", bitrate / 1000));
 
     while running.load(Ordering::Relaxed) {
         if consumer.occupied_len() < RESAMPLE_CHUNK {
@@ -283,12 +333,8 @@ pub fn run(to: &str, device: &str, gain_db: f32, bitrate: u32, drop_pct: f32) ->
             }
             pending.drain(..FRAME_SAMPLES);
 
-            let payload_len = {
-                let encoded = encoder.encode(&pcm)?;
-                packet[RTP_HEADER_LEN..RTP_HEADER_LEN + encoded.len()].copy_from_slice(encoded);
-                encoded.len()
-            };
-
+            // Nagłówek powstaje przed szyfrowaniem, bo wchodzi w uwierzytelnienie:
+            // podmieniony numer sekwencyjny unieważnia pakiet po drugiej stronie.
             RtpHeader {
                 marker: sent == 0,
                 payload: PayloadKind::Opus,
@@ -298,6 +344,13 @@ pub fn run(to: &str, device: &str, gain_db: f32, bitrate: u32, drop_pct: f32) ->
             }
             .encode_into(&mut packet)?;
 
+            let payload_len = {
+                let encoded = encoder.encode(&pcm)?;
+                let sealed = cipher.seal(ext_seq, &packet[..RTP_HEADER_LEN], encoded)?;
+                packet[RTP_HEADER_LEN..RTP_HEADER_LEN + sealed.len()].copy_from_slice(&sealed);
+                sealed.len()
+            };
+
             if !dropper.should_drop() {
                 if let Err(e) = socket.send(&packet[..RTP_HEADER_LEN + payload_len]) {
                     tracing::warn!(error = %e, "nie udało się wysłać ramki");
@@ -305,6 +358,9 @@ pub fn run(to: &str, device: &str, gain_db: f32, bitrate: u32, drop_pct: f32) ->
             }
 
             seq = seq.wrapping_add(1);
+            // Wartość jednorazowa szyfrowania nie może się powtórzyć, więc
+            // liczymy pakiety w pełnych 64 bitach, nie w szesnastu z nagłówka.
+            ext_seq += 1;
             timestamp = timestamp.wrapping_add(FRAME_SAMPLES as u32);
             sent += 1;
             bytes += (RTP_HEADER_LEN + payload_len) as u64;
@@ -326,17 +382,17 @@ pub fn run(to: &str, device: &str, gain_db: f32, bitrate: u32, drop_pct: f32) ->
                 );
             }
 
-            println!(
-                "  {sent:>7} ramek   {:>5.1} kbps   szczyt {:>6.1} dBFS                    FEC na {}% strat{}",
-                bytes as f64 * 8.0 / elapsed / 1000.0,
-                mb_audio::peak_dbfs(&[peak]),
-                encoder.expected_loss(),
-                if dropper.dropped > 0 {
-                    format!("   zgubiono celowo {}", dropper.dropped)
-                } else {
-                    String::new()
-                }
-            );
+            ui.send_status(&SendStatus {
+                frames: sent,
+                kbps: (bytes as f64 * 8.0 / elapsed / 1000.0) as f32,
+                peak_dbfs: mb_audio::peak_dbfs(&[peak]),
+                loss_pct: loss,
+                latency_ms: f32::from_bits(reported_latency.load(Ordering::Relaxed) as u32),
+                jitter_ms: f32::from_bits(reported_jitter.load(Ordering::Relaxed) as u32),
+                fec_pct: encoder.expected_loss(),
+                overruns: lost_input,
+                dropped_on_purpose: dropper.dropped,
+            });
             peak = 0.0;
             bytes = 0;
         }
@@ -347,7 +403,7 @@ pub fn run(to: &str, device: &str, gain_db: f32, bitrate: u32, drop_pct: f32) ->
     }
     .write_to(&mut control);
     let _ = control.flush();
-    println!("Zakończono. Wysłano {sent} ramek.");
+    ui.line(&format!("Zakończono. Wysłano {sent} ramek."));
     Ok(())
 }
 
@@ -378,10 +434,68 @@ fn has_port(target: &str) -> bool {
     }
 }
 
-fn hostname() -> String {
-    std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_else(|_| "nieznany".into())
+/// Zamienia to, co użytkownik wpisał w `--to`, na adres.
+///
+/// Najpierw jako adres, bo tak jest bez czekania. Dopiero gdy to nie wyjdzie,
+/// szukamy w sieci maszyny o takiej nazwie — `--to salon` ma działać tak samo
+/// jak `--to 192.168.1.40`, skoro nazwę widać na liście z `discover`.
+fn target_addr(target: &str, ui: &dyn Reporter) -> Result<SocketAddr> {
+    match resolve(target, CONTROL_PORT) {
+        Ok(addr) => Ok(addr),
+        Err(e) => match peer_by_name(target, ui)? {
+            Some(peer) => {
+                ui.line(&format!("„{}” to {}.", peer.name, peer.addr));
+                Ok(peer.addr)
+            }
+            None => Err(e),
+        },
+    }
+}
+
+fn peer_by_name(fragment: &str, ui: &dyn Reporter) -> Result<Option<mb_net::Peer>> {
+    let needle = fragment.to_lowercase();
+    Ok(discover(ui)?
+        .into_iter()
+        .find(|p| p.name.to_lowercase().contains(&needle)))
+}
+
+/// Znajduje jedyny odbiornik w sieci albo tłumaczy, czego brakuje.
+fn sole_peer(ui: &dyn Reporter) -> Result<SocketAddr> {
+    let peers = discover(ui)?;
+    match peers.len() {
+        0 => bail!(
+            "nie widzę żadnego odbiornika w sieci.\n\
+             Uruchom `micbridge recv` na drugiej maszynie. Jeśli już działa, \
+             router może blokować ruch multicast między klientami — wtedy podaj \
+             adres wprost: `--to 192.168.1.40`."
+        ),
+        1 => {
+            let peer = peers.into_iter().next().expect("jeden jest");
+            ui.line(&format!("Znalazłem „{}” pod {}.", peer.name, peer.addr));
+            Ok(peer.addr)
+        }
+        _ => {
+            ui.line("W sieci jest kilka odbiorników:");
+            for peer in &peers {
+                ui.line(&format!("  {:<24} {}", peer.name, peer.addr));
+            }
+            bail!("wskaż jeden: --to \"nazwa\" albo --to adres");
+        }
+    }
+}
+
+/// Przeszukuje sieć i odsiewa to, z czym i tak byśmy się nie dogadali.
+fn discover(ui: &dyn Reporter) -> Result<Vec<mb_net::Peer>> {
+    ui.line("Szukam odbiorników w sieci…");
+    let peers = mb_net::browse(DISCOVERY_WINDOW)?;
+    let (ok, obce): (Vec<_>, Vec<_>) = peers.into_iter().partition(mb_net::Peer::compatible);
+    for peer in obce {
+        ui.line(&format!(
+            "  pomijam „{}” — protokół w wersji {}, ja mówię {PROTOCOL_VERSION}",
+            peer.name, peer.version
+        ));
+    }
+    Ok(ok)
 }
 
 #[cfg(test)]

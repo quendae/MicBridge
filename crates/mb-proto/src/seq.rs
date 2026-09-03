@@ -30,28 +30,42 @@ impl SeqExtender {
     /// Packets that arrive slightly out of order map back to their true index,
     /// including across a wrap, so the jitter buffer can reorder them.
     pub fn extend(&mut self, seq: u16) -> u64 {
+        let (ext, roc, highest) = self.resolve(seq);
+        self.roc = roc;
+        self.highest = Some(highest);
+        ext
+    }
+
+    /// The same mapping without committing to it.
+    ///
+    /// A forged packet must not be able to move the rollover counter: the
+    /// receiver decrypts against the peeked value and only calls `extend` once
+    /// the packet has proven it is ours.
+    pub fn peek(&self, seq: u16) -> u64 {
+        self.resolve(seq).0
+    }
+
+    /// Returns the extended sequence plus the state it would leave behind.
+    fn resolve(&self, seq: u16) -> (u64, u32, u16) {
         let Some(highest) = self.highest else {
-            self.highest = Some(seq);
-            return self.roc as u64 * 65_536 + seq as u64;
+            return (self.roc as u64 * 65_536 + seq as u64, self.roc, seq);
         };
 
         let delta = seq as i64 - highest as i64;
-        let roc = if delta < -HALF {
+        let (roc, next_highest, next_roc) = if delta < -HALF {
             // Forward across the wrap: 65530 -> 3.
-            self.roc = self.roc.wrapping_add(1);
-            self.highest = Some(seq);
-            self.roc
+            let bumped = self.roc.wrapping_add(1);
+            (bumped, seq, bumped)
         } else if delta > HALF {
             // A late packet from before the wrap: 3 -> 65530.
-            self.roc.wrapping_sub(1)
+            (self.roc.wrapping_sub(1), highest, self.roc)
+        } else if delta > 0 {
+            (self.roc, seq, self.roc)
         } else {
-            if delta > 0 {
-                self.highest = Some(seq);
-            }
-            self.roc
+            (self.roc, highest, self.roc)
         };
 
-        roc as u64 * 65_536 + seq as u64
+        (roc as u64 * 65_536 + seq as u64, next_roc, next_highest)
     }
 }
 
@@ -94,5 +108,18 @@ mod tests {
         assert_eq!(e.extend(103), 103);
         assert_eq!(e.extend(101), 101);
         assert_eq!(e.extend(102), 102);
+    }
+
+    #[test]
+    fn peeking_does_not_move_the_rollover_counter() {
+        let mut ext = SeqExtender::new();
+        ext.extend(65_530);
+        // Podrobiony pakiet zza zawinięcia: gdyby przesunął licznik, kolejne
+        // prawdziwe pakiety liczyłyby się od złej wartości.
+        assert_eq!(ext.peek(3), ext.peek(3));
+        assert_eq!(ext.roc(), 0, "podejrzenie niczego nie zmienia");
+        assert_eq!(ext.extend(65_531), 65_531);
+        assert_eq!(ext.extend(3), 65_536 + 3, "prawdziwe zawinięcie liczy się");
+        assert_eq!(ext.roc(), 1);
     }
 }

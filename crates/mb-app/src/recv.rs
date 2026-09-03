@@ -18,6 +18,7 @@ use anyhow::{bail, Context, Result};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 
+use crate::ui::{RecvStatus, Reporter};
 use mb_engine::codec::frame_buffer;
 use mb_engine::{
     AdaptiveTarget, DriftController, JitterBuffer, OpusDecoder, Pop, StreamStats, VariableResampler,
@@ -55,54 +56,112 @@ const MIN_BUFFER_FRAMES: usize = 2;
 /// się do sufitu bufora, zanim użytkownik zdążył wybrać mikrofon w aplikacji.
 const SINK_IDLE_MS: u64 = 250;
 
-pub fn run(listen: &str, sink: &str, buffer_ms: u32, adaptive: bool) -> Result<()> {
-    let listen_addr: SocketAddr = listen
+/// Jak ma pracować odbiornik.
+#[derive(Debug, Clone)]
+pub struct Options {
+    pub listen: String,
+    /// Ujście: `auto`, `virtual`, `device` albo fragment nazwy.
+    pub sink: String,
+    pub buffer_ms: u32,
+    /// Czy dopasowywać poduszkę do jakości łącza.
+    pub adaptive: bool,
+    /// Czy ogłaszać się w sieci przez mDNS.
+    pub announce: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            listen: format!("0.0.0.0:{}", mb_proto::CONTROL_PORT),
+            sink: "auto".into(),
+            buffer_ms: 30,
+            adaptive: true,
+            announce: true,
+        }
+    }
+}
+
+/// Ile czekamy między próbami przyjęcia połączenia.
+///
+/// Nasłuch jest nieblokujący, żeby prośba o zatrzymanie działała od razu.
+/// Blokujące `accept` reagowałoby dopiero, gdy ktoś się połączy.
+const ACCEPT_POLL: Duration = Duration::from_millis(100);
+
+pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Result<()> {
+    let listen_addr: SocketAddr = opts
+        .listen
         .parse()
-        .with_context(|| format!("`{listen}` nie jest adresem nasłuchu"))?;
+        .with_context(|| format!("`{}` nie jest adresem nasłuchu", opts.listen))?;
 
-    mb_audio::sink::validate(sink)?;
+    mb_audio::sink::validate(&opts.sink)?;
 
-    let target_frames = (buffer_ms / FRAME_MS).max(1) as usize;
+    let target_frames = (opts.buffer_ms / FRAME_MS).max(1) as usize;
     let max_frames = (MAX_BUFFER_MS / FRAME_MS) as usize;
 
     let listener =
         TcpListener::bind(listen_addr).with_context(|| format!("nie mogę zająć {listen_addr}"))?;
-    println!("Nasłuchuję na {listen_addr}. Ctrl-C kończy.");
-    println!(
-        "Bufor jitter: {buffer_ms} ms ({target_frames} × {FRAME_MS} ms){}.",
-        if adaptive {
+    listener.set_nonblocking(true)?;
+    ui.line(&format!("Nasłuchuję na {listen_addr}."));
+
+    // Ogłoszenie żyje tak długo jak nasłuch. Nie zrywamy go na czas sesji:
+    // druga maszyna ma widzieć ten komputer także wtedy, gdy akurat jest
+    // zajęty — inaczej lista migałaby zależnie od tego, kto się właśnie łączy.
+    let _beacon = if opts.announce {
+        match mb_net::Advertiser::start(listen_addr.port()) {
+            Ok(a) => {
+                ui.line(&format!("Widoczny w sieci jako „{}”.", mb_net::hostname()));
+                Some(a)
+            }
+            Err(e) => {
+                // Brak multicastu nie może zatrzymać odbiornika: adres da się
+                // wpisać ręcznie i to jest cała droga awaryjna.
+                tracing::warn!(error = %e, "nie mogę ogłosić się w sieci");
+                ui.line("Nie mogę ogłosić się w sieci — druga strona musi podać adres ręcznie.");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    ui.line(&format!(
+        "Bufor jitter: {} ms ({target_frames} × {FRAME_MS} ms){}.",
+        opts.buffer_ms,
+        if opts.adaptive {
             ", adaptacyjny"
         } else {
             ", stały"
         }
-    );
+    ));
 
-    let running = Arc::new(AtomicBool::new(true));
-    {
-        let running = Arc::clone(&running);
-        ctrlc::set_handler(move || running.store(false, Ordering::Relaxed))
-            .context("nie mogę przechwycić Ctrl-C")?;
-    }
+    // Kod parowania żyje tak długo jak proces, nie jak połączenie: użytkownik
+    // przepisuje go z tego ekranu i ma mieć czas się pomylić.
+    let pairing = Mutex::new(crate::pair::Pairing::new());
 
-    for stream in listener.incoming() {
-        if !running.load(Ordering::Relaxed) {
-            break;
-        }
+    while running.load(Ordering::Relaxed) {
+        let stream = match listener.accept() {
+            Ok((control, _)) => Ok(control),
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(ACCEPT_POLL);
+                continue;
+            }
+            Err(e) => Err(e),
+        };
         match stream {
             Ok(control) => {
                 let cfg = SessionConfig {
-                    sink,
+                    sink: &opts.sink,
                     target_frames,
                     max_frames,
-                    adaptive,
+                    adaptive: opts.adaptive,
                 };
-                if let Err(e) = session(control, &cfg, &running) {
+                if let Err(e) = session(control, &cfg, &running, &pairing, ui) {
                     tracing::error!(error = %e, "sesja zakończona błędem");
+                    ui.line(&format!("Sesja zakończona: {e}"));
                 }
                 if !running.load(Ordering::Relaxed) {
                     break;
                 }
-                println!("\nCzekam na kolejne połączenie.");
+                ui.line("Czekam na kolejne połączenie.");
             }
             Err(e) => tracing::warn!(error = %e, "nieudane połączenie przychodzące"),
         }
@@ -117,22 +176,39 @@ struct SessionConfig<'a> {
     adaptive: bool,
 }
 
-fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool>) -> Result<()> {
+fn session(
+    mut control: TcpStream,
+    cfg: &SessionConfig,
+    running: &Arc<AtomicBool>,
+    pairing: &Mutex<crate::pair::Pairing>,
+    ui: &dyn Reporter,
+) -> Result<()> {
     let peer = control.peer_addr()?;
+    // Gniazdo dziedziczy tryb nieblokujący po nasłuchu, a sesja czyta wprost
+    // ze strumienia i oczekuje, że odczyt poczeka na dane.
+    control.set_nonblocking(false)?;
     control.set_nodelay(true)?;
     tracing::info!(%peer, "połączenie przychodzące");
 
-    let hello = match ControlMsg::read_from(&mut control)? {
+    // Rozpoznanie i ewentualne parowanie idą jawnie; wszystko dalej już nie.
+    let (channel, peer_name) = crate::pair::accept(&mut control, pairing, ui)?;
+    let channel = Mutex::new(channel);
+    tracing::info!(%peer_name, "kanał sterujący zaszyfrowany");
+
+    let hello = match crate::pair::recv_secure(&mut control, &channel)? {
         ControlMsg::Hello(h) => h,
         other => bail!("oczekiwałem HELLO, dostałem {other:?}"),
     };
 
     if let Err(reason) = check(&hello) {
         tracing::warn!(%reason, "odrzucam");
-        let _ = ControlMsg::Reject {
-            reason: reason.clone(),
-        }
-        .write_to(&mut control);
+        let _ = crate::pair::send_secure(
+            &mut control,
+            &channel,
+            &ControlMsg::Reject {
+                reason: reason.clone(),
+            },
+        );
         bail!(reason);
     }
 
@@ -175,29 +251,41 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
     media.set_read_timeout(Some(Duration::from_millis(200)))?;
     let ssrc = fresh_ssrc();
 
-    ControlMsg::Accept(Accept {
-        version: PROTOCOL_VERSION,
-        ssrc,
-        media_port: MEDIA_PORT,
-        sink: sink.name().to_string(),
-        host: hostname(),
-    })
-    .write_to(&mut control)?;
+    // Klucz mediów jest jednorazowy i jedzie zaszyfrowanym kanałem, więc nie
+    // ma tu żadnego stanu do uzgadniania — a nagrany ruch nie da się odtworzyć
+    // nawet komuś, kto później zdobędzie sekret z parowania.
+    let media_key = mb_net::fresh_media_key();
+    let cipher = mb_net::MediaCipher::new(&media_key)?;
 
-    println!("\n{} ({}) → {}", hello.host, peer.ip(), sink.name());
-    println!("  źródło: {}", hello.device);
+    crate::pair::send_secure(
+        &mut control,
+        &channel,
+        &ControlMsg::Accept(Accept {
+            version: PROTOCOL_VERSION,
+            ssrc,
+            media_port: MEDIA_PORT,
+            sink: sink.name().to_string(),
+            host: mb_net::hostname(),
+            media_key: media_key.to_vec(),
+        }),
+    )?;
+
+    ui.connected(
+        &format!("{} ({})", peer_name, peer.ip()),
+        &format!("{} — źródło: {}", sink.name(), hello.device),
+    );
     if device_rate != SAMPLE_RATE {
-        println!("  konwersja {SAMPLE_RATE} Hz → {device_rate} Hz");
+        ui.line(&format!("  konwersja {SAMPLE_RATE} Hz → {device_rate} Hz"));
     }
     if sink.is_input_device() {
-        println!(
+        ui.line(&format!(
             "  w aplikacji (Discord, OBS, gra) wybierz mikrofon „{}”",
             mb_audio::DISPLAY_NAME
-        );
+        ));
     } else {
-        println!("  w aplikacji wybierz mikrofon odpowiadający temu urządzeniu");
+        ui.line("  w aplikacji wybierz mikrofon odpowiadający temu urządzeniu");
         if let Some(hint) = mb_audio::latency_hint(sink.name()) {
-            println!("  {hint}");
+            ui.line(&format!("  {hint}"));
         }
     }
 
@@ -220,6 +308,7 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
             let mut extender = SeqExtender::new();
             let mut stats = StreamStats::new(FRAME_MS);
             let mut expected_ssrc = None;
+            let mut rejected = 0u64;
 
             while live.load(Ordering::Relaxed) && running.load(Ordering::Relaxed) {
                 let n = match media.recv(&mut buf) {
@@ -257,12 +346,33 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
                     continue;
                 }
 
-                let ext = extender.extend(header.seq);
+                // Numer sekwencyjny podglądamy, zamiast go od razu przyjąć:
+                // podrobiony pakiet nie może przesunąć licznika zawinięć, bo
+                // rozjechałby wartości jednorazowe prawdziwym pakietom.
+                let ext = extender.peek(header.seq);
+                let payload = match cipher.open(
+                    ext,
+                    &buf[..RTP_HEADER_LEN],
+                    &buf[RTP_HEADER_LEN..n],
+                ) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        rejected += 1;
+                        if rejected == 1 {
+                            tracing::warn!(
+                                    "pakiet nie przeszedł uwierzytelnienia — ktoś nadaje                                      na ten port albo druga strona ma inny klucz"
+                                );
+                        }
+                        continue;
+                    }
+                };
+                extender.extend(header.seq);
+
                 stats.on_packet(ext, Instant::now());
                 shared.set_jitter(stats.jitter_ms());
 
                 if let Ok(mut jb) = jitter.lock() {
-                    jb.push(ext, buf[RTP_HEADER_LEN..n].to_vec());
+                    jb.push(ext, payload);
                 }
             }
         })
@@ -327,37 +437,19 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
         let jitter_buf_ms = depth as f32 * FRAME_MS as f32;
         let starved_now = starved.swap(0, Ordering::Relaxed);
 
-        if shared.idle() {
-            seen_overflow = overflow;
-            if sink.is_input_device() {
-                println!(
-                    "  czekam — w aplikacji wybierz mikrofon „{}”",
-                    mb_audio::DISPLAY_NAME
-                );
-            } else {
-                println!("  czekam — nic jeszcze nie odtwarza z tego urządzenia");
-            }
-        } else {
-            println!(
-            "  bufor {:>3.0}+{:>2.0} ms   cel {:>3.0}   strat {loss:>4.1}% (FEC {recovered})   \
-             jitter {:>4.1} ms   dryf {:+.3}%{}",
-            jitter_buf_ms,
+        ui.recv_status(&RecvStatus {
+            buffer_ms: jitter_buf_ms,
             ring_ms,
-            shared.setpoint(),
-            shared.jitter(),
-            shared.correction() * 100.0,
-            // Przepełnienie bufora nie liczy się jako strata pakietu, ale
-            // wyrzucone ramki słychać tak samo — bez tego licznika stan
-            // „strat 0,0%” towarzyszył rwącemu się dźwiękowi.
-            match (starved_now, overflow.saturating_sub(seen_overflow)) {
-                (0, 0) => String::new(),
-                (s, 0) => format!("   NIEDOMIAR {s}"),
-                (0, o) => format!("   WYRZUCONO {o} ramek (bufor pełny)"),
-                (s, o) => format!("   NIEDOMIAR {s}   WYRZUCONO {o}"),
-            }
-            );
-            seen_overflow = overflow;
-        }
+            target_ms: shared.setpoint(),
+            loss_pct: loss,
+            recovered,
+            jitter_ms: shared.jitter(),
+            drift_pct: shared.correction(),
+            starved: starved_now,
+            dropped: overflow.saturating_sub(seen_overflow),
+            idle: shared.idle(),
+        });
+        seen_overflow = overflow;
 
         let report = ControlMsg::Stats(Stats {
             lost_pct: loss,
@@ -365,7 +457,7 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
             buffer_ms: jitter_buf_ms + ring_ms,
             late_pct: late as f32,
         });
-        if report.write_to(&mut control).is_err() {
+        if crate::pair::send_secure(&mut control, &channel, &report).is_err() {
             tracing::info!("nadajnik się rozłączył");
             break;
         }
@@ -375,10 +467,13 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
     }
 
     live.store(false, Ordering::Relaxed);
-    let _ = ControlMsg::Bye {
-        reason: "koniec sesji".into(),
-    }
-    .write_to(&mut control);
+    let _ = crate::pair::send_secure(
+        &mut control,
+        &channel,
+        &ControlMsg::Bye {
+            reason: "koniec sesji".into(),
+        },
+    );
     let _ = net.join();
     let _ = pacer.join();
     Ok(())
@@ -667,10 +762,4 @@ fn fresh_ssrc() -> u32 {
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.subsec_nanos() ^ (d.as_secs() as u32))
         .unwrap_or(0x7A31_F0C2)
-}
-
-fn hostname() -> String {
-    std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_else(|_| "nieznany".into())
 }

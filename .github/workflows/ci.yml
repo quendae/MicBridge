@@ -24,12 +24,13 @@ jobs:
       # cpal links against ALSA on Linux even when the runtime path is
       # PipeWire, so those headers are needed to build at all. libpipewire and
       # libclang are for the virtual source: pipewire-rs generates its bindings
-      # at build time. cmake builds the vendored libopus.
+      # at build time. cmake builds the vendored libopus. GTK and the app
+      # indicator are for the tray icon in the window build.
       - name: Zależności systemowe (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake libasound2-dev libpipewire-0.3-dev libclang-dev pkg-config
+          sudo apt-get install -y cmake libasound2-dev libpipewire-0.3-dev libclang-dev pkg-config libgtk-3-dev libayatana-appindicator3-dev libxkbcommon-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -66,7 +67,7 @@ jobs:
       - name: Zależności systemowe
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm --needed base-devel cmake git alsa-lib pipewire clang rustup
+          pacman -S --noconfirm --needed base-devel cmake git alsa-lib pipewire clang rustup gtk3 libayatana-appindicator libxkbcommon
 
       - uses: actions/checkout@v5
 

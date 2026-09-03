@@ -8,11 +8,10 @@ Założenia, decyzje projektowe i plan działania: **[docs/ARCHITEKTURA.md](docs
 (ta sama treść z diagramami, do czytania w przeglądarce:
 [dokument techniczny](https://claude.ai/code/artifact/c6f3e44a-ac5e-4cda-8299-fce46b05237f)).
 
-## Stan: etap M3
+## Stan: etap M4
 
-Silnik jest gotowy: Opus z FEC, bufor adaptacyjny, korekcja dryfu zegarów,
-a od M3 także wirtualne wejście po obu stronach. Brakuje tego, co czyni z tego
-produkt — wykrywania w sieci, parowania i okna.
+Program jest kompletny: silnik z M2, wirtualne wejście z M3, a od M4 także
+wykrywanie w sieci, parowanie, szyfrowanie i okno. Zostaje pakowanie.
 
 | Etap | Zakres | Stan |
 |------|--------|------|
@@ -20,11 +19,12 @@ produkt — wykrywania w sieci, parowania i okna.
 | M1 | PCM po UDP, wybór urządzeń, bufor jitter, kanał sterujący | **gotowe** |
 | M2 | Opus, FEC, bufor adaptacyjny, korekcja dryfu, resampling | **gotowe** |
 | M3 | wirtualne wejście: node PipeWire, wykrywanie VB-CABLE | **gotowe** — sprawdzone na Archu (PipeWire 1.6) i Windows 10 |
-| M4 | mDNS, parowanie SPAKE2, okno egui | |
+| M4 | mDNS, parowanie SPAKE2, szyfrowanie, okno egui | **gotowe** |
 | M5 | pakiety deb/rpm/AUR/Flatpak/MSI | |
 
-Czego wciąż nie ma, świadomie: szyfrowania i parowania, wykrywania w sieci
-(adres wpisuje się ręcznie), okna.
+Czego wciąż nie ma: paczek instalacyjnych. Program trzeba na razie zbudować
+samemu, ale poza tym obietnica — „uruchom na obu, sparuj raz, działa” — jest
+na miejscu.
 
 ## Budowanie
 
@@ -47,16 +47,43 @@ Nagłówki ALSA są potrzebne, bo cpal linkuje się z nimi niezależnie od tego,
 docelowo pracujemy przez PipeWire. Nagłówki PipeWire i libclang idą do
 wirtualnego mikrofonu — `pipewire-rs` generuje wiązania w czasie budowania.
 
+Do okna dochodzą GTK i wskaźnik zasobnika — potrzebuje ich ikona w tacce.
+Samo `micbridge` (wiersz poleceń) zbuduje się bez nich:
+`cargo build --release -p mb-app`.
+
 ```bash
 # Debian / Ubuntu
-sudo apt install build-essential cmake pkg-config libasound2-dev libpipewire-0.3-dev libclang-dev
+sudo apt install build-essential cmake pkg-config libasound2-dev libpipewire-0.3-dev \
+    libclang-dev libgtk-3-dev libayatana-appindicator3-dev libxkbcommon-dev
 # Fedora
-sudo dnf install gcc cmake pkgconf-pkg-config alsa-lib-devel pipewire-devel clang-devel
+sudo dnf install gcc cmake pkgconf-pkg-config alsa-lib-devel pipewire-devel clang-devel \
+    gtk3-devel libayatana-appindicator-gtk3-devel libxkbcommon-devel
 # Arch
-sudo pacman -S base-devel cmake alsa-lib pipewire clang
+sudo pacman -S base-devel cmake alsa-lib pipewire clang gtk3 libayatana-appindicator libxkbcommon
 
 cargo build --release
 ```
+
+## Okno
+
+```bash
+micbridge-gui
+```
+
+Dwie połowy: **odbieranie** i **wysyłanie**, każda z własnym przełącznikiem.
+Można włączyć obie naraz — nic nie stoi na przeszkodzie, żeby jedna maszyna
+w tym samym czasie oddawała swój mikrofon i przyjmowała cudzy.
+
+Po obu stronach widać **opóźnienie i straty**, na bieżąco i na wykresie
+z ostatnich dwóch minut. Nadajnik nie ma jak zmierzyć opóźnienia sam, więc
+pokazuje liczbę zgłoszoną przez odbiornik — obie strony patrzą na tę samą.
+
+Zamknięcie okna chowa program do zasobnika, bo sesja potrafi grać godzinami
+i zamknięcie okna nie jest prośbą o jej przerwanie. Wyjście jest w menu ikony.
+W opcjach jest też uruchamianie razem z systemem — domyślnie wyłączone.
+
+Wiersz poleceń robi dokładnie to samo i zostaje na miejscu; okno i terminal
+korzystają z tego samego silnika.
 
 ## Użycie
 
@@ -64,12 +91,19 @@ cargo build --release
 # co widać w systemie
 micbridge devices
 
-# odbiornik — uruchamiany PIERWSZY, bo to on nasłuchuje
-micbridge recv --sink auto --buffer-ms 30
+# odbiornik — uruchamiany PIERWSZY, bo to on nasłuchuje i ogłasza się w sieci
+micbridge recv --sink auto
 
-# nadajnik
-micbridge send --to 192.168.1.40 --device "yeti"
+# nadajnik — bez adresu, sam znajdzie odbiornik w sieci
+micbridge send --device "yeti"
 ```
+
+Za pierwszym razem odbiornik pokaże sześciocyfrowy kod, a nadajnik poprosi
+o jego przepisanie. To jedyny moment, w którym trzeba cokolwiek zrobić ręcznie
+— potem obie maszyny łączą się same.
+
+Gdy w sieci stoi więcej niż jeden odbiornik, nadajnik wypisze je i poprosi
+o wskazanie: `--to "salon"` albo `--to 192.168.1.40`.
 
 Urządzenie nie musi pracować przy 48 kHz — różnicę zdejmuje resampler po tej
 stronie, która jej potrzebuje.
@@ -82,6 +116,10 @@ Przydatne flagi:
 | `send --gain-db 6` | cichy mikrofon |
 | `send --drop-pct 5` | diagnostyka: gub celowo pakiety i patrz, czy FEC nadąża |
 | `recv --fixed-buffer` | trzymaj zadaną poduszkę zamiast dopasowywać ją do łącza |
+| `discover` | pokaż odbiorniki widoczne w sieci |
+| `peers` / `forget <nazwa>` | co jest sparowane i jak to cofnąć |
+| `send --code 482193` | kod parowania bez pytania — do skryptów i usług |
+| `recv --no-announce` | nie ogłaszaj się; adres podaje się wtedy ręcznie |
 
 ### Ujście, czyli gdzie ląduje dźwięk
 
@@ -119,6 +157,108 @@ micbridge send --to 127.0.0.1 --device tone
 TCP 47100 (sterowanie), UDP 47101 (media). Odbiornik musi mieć oba otwarte
 w zaporze.
 
+## Test w Windows od zera
+
+### 1. Narzędzia i budowanie
+
+```powershell
+winget install Rustlang.Rustup
+winget install Microsoft.VisualStudio.2022.BuildTools `
+  --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+winget install Kitware.CMake
+winget install Git.Git
+
+git clone https://github.com/quendae/MicBridge.git
+cd MicBridge
+cargo build --release
+```
+
+Po restarcie terminala (żeby zobaczył `cargo` i `cmake`) powstaną dwa programy:
+`target\release\micbridge.exe` i `target\release\micbridge-gui.exe`.
+
+### 2. Zapora — bez tego maszyny się nie zobaczą
+
+Windows domyślnie odcina ruch multicast, którym działa wykrywanie, i przy
+pierwszym uruchomieniu pyta tylko o porty, na których program nasłuchuje.
+Najprościej dodać reguły z góry, w terminalu **uruchomionym jako administrator**:
+
+```powershell
+netsh advfirewall firewall add rule name="MicBridge mDNS" `
+  dir=in action=allow protocol=UDP localport=5353
+netsh advfirewall firewall add rule name="MicBridge sterowanie" `
+  dir=in action=allow protocol=TCP localport=47100
+netsh advfirewall firewall add rule name="MicBridge media" `
+  dir=in action=allow protocol=UDP localport=47101
+```
+
+Reguła mDNS potrzebna jest po obu stronach — jedna maszyna pyta, druga
+odpowiada, a odpowiedź też przychodzi z zewnątrz. Reguły na 47100 i 47101
+potrzebuje tylko ta maszyna, która **odbiera**; nie zaszkodzi zostawić obu.
+
+Gdyby zamiast tego wyskoczyło okienko zapory przy starcie, zaznacz **sieci
+prywatne**. Sieć musi być w Windows oznaczona jako prywatna, nie publiczna —
+w publicznej system blokuje wykrywanie niezależnie od reguł.
+
+Skasowanie reguł, gdyby były niepotrzebne:
+
+```powershell
+netsh advfirewall firewall delete rule name="MicBridge mDNS"
+netsh advfirewall firewall delete rule name="MicBridge sterowanie"
+netsh advfirewall firewall delete rule name="MicBridge media"
+```
+
+### 3. Gdy Windows ma odbierać
+
+Windows nie pozwala programowi utworzyć mikrofonu bez sterownika trybu jądra,
+więc potrzebny jest jednorazowo [VB-CABLE](https://vb-audio.com/Cable/):
+rozpakuj, uruchom `VBCABLE_Setup_x64.exe` jako administrator, zrestartuj
+komputer. Potem w `VBCABLE_ControlPanel.exe` ustaw *Max Latency* na **2048**
+sampli — domyślne 7168 dokłada około 130 ms, czyli więcej niż cała reszta
+łańcucha razem wzięta.
+
+Sprawdzenie, czy program go widzi:
+
+```powershell
+.\target\release\micbridge.exe devices
+```
+
+`CABLE Input` ma się pojawić wśród wyjść, z dopiskiem „← wirtualny kabel".
+W aplikacji (Discord, OBS, gra) wybiera się wtedy mikrofon **CABLE Output**.
+
+Gdy Windows tylko **wysyła**, VB-CABLE nie jest do niczego potrzebny.
+
+### 4. Czy maszyny się widzą
+
+Na maszynie odbierającej:
+
+```powershell
+.\target\release\micbridge.exe recv --sink auto
+```
+
+Na drugiej:
+
+```bash
+./target/release/micbridge discover
+```
+
+Odbiornik ma się pojawić na liście pod nazwą swojego komputera. Jeśli lista
+jest pusta, a `recv` działa — to zapora albo sieć oznaczona jako publiczna.
+Droga awaryjna jest zawsze ta sama: `send --to 192.168.1.40`, adres z `ipconfig`.
+
+### 5. Parowanie
+
+```bash
+./target/release/micbridge send --device tone
+```
+
+Odbiornik pokaże sześciocyfrowy kod, nadajnik poprosi o jego przepisanie. Kod
+podaje się raz; od następnego uruchomienia maszyny łączą się same. To samo
+w oknie: `micbridge-gui`, kod pojawia się na banerze u góry.
+
+Sprawdzenie, że dźwięk płynie — w Windows przez „Nasłuchuj tego urządzenia"
+we właściwościach `CABLE Output` (zakładka *Nasłuchiwanie*), albo po prostu
+wybierając `CABLE Output` jako mikrofon w dowolnej aplikacji.
+
 ## Test w Linuksie od zera
 
 Poniżej Arch (i pochodne, m.in. Omarchy — PipeWire i Wireplumber są tam
@@ -128,7 +268,8 @@ pakiety są w sekcji [Budowanie](#linux).
 ### 1. Zależności i budowanie
 
 ```bash
-sudo pacman -S --needed base-devel cmake alsa-lib pipewire clang git
+sudo pacman -S --needed base-devel cmake alsa-lib pipewire clang git \
+    gtk3 libayatana-appindicator libxkbcommon
 # Rust, jeśli jeszcze go nie ma:
 sudo pacman -S --needed rustup && rustup default stable
 
@@ -314,6 +455,33 @@ zapas na kaprysy sieci.
   zobaczy „MicBridge” dopiero po odświeżeniu listy. Do rozstrzygnięcia w M4,
   gdy dojdzie okno: wtedy węzeł może istnieć przez cały czas, kiedy odbiór jest
   włączony.
+
+## Bezpieczeństwo
+
+Sieć domowa nie jest zaufana — dość, że ktoś jest na tym samym Wi-Fi. Dlatego:
+
+* **Parowanie odbywa się raz, kodem z ekranu.** Sześć cyfr to za mało na klucz,
+  ale SPAKE2 nie pozwala ich łamać offline: podsłuchujący, który nagra całą
+  wymianę, nie ma z czego zgadywać w domu. Musi trafić za pierwszym razem, na
+  żywo — a po trzech pudłach odbiornik losuje nowy kod.
+* **Każda sesja ma własne klucze.** Wspólny sekret z parowania służy tylko do
+  uwierzytelnienia; właściwe klucze uzgadnia Noise `NNpsk0` przy każdym
+  połączeniu. Nagrany ruch zostaje nieczytelny nawet dla kogoś, kto później
+  zdobędzie plik z kluczami.
+* **Dźwięk jest szyfrowany i uwierzytelniony.** Każdy pakiet osobno, bo po UDP
+  giną i przestawiają się. Nagłówek RTP zostaje jawny — bufor jitter musi go
+  czytać przed odszyfrowaniem — ale wchodzi w uwierzytelnienie, więc podmiana
+  numeru unieważnia pakiet. Kosztuje to 16 bajtów na pakiet, czyli przy
+  ramkach 10 ms około 13 kbps: 46 kbps zamiast 33.
+* **Nazwy maszyn niczego nie potwierdzają.** Służą wyłącznie do znalezienia
+  klucza; podszycie się pod cudzą nazwę nic nie daje, bo klucza to nie dostarcza.
+
+Klucze leżą w `peers.toml` w katalogu konfiguracyjnym użytkownika
+(`micbridge peers` pokaże ścieżkę), w Linuksie z prawami `600`.
+
+Czego to nie chroni: nikt nie sprawdza, czy maszyna, z którą się sparowałeś,
+jest tą, o której myślisz — kod przepisuje człowiek z ekranu, który ma przed
+sobą, i to jest cała weryfikacja tożsamości.
 
 ## Licencja
 

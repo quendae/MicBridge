@@ -8,4 +8,6 @@ license.workspace = true
 [dependencies]
 serde.workspace = true
 ciborium.workspace = true
+# Bez tego CBOR koduje bajty jako tablicę liczb — kilka razy dłużej.
+serde_bytes = "0.11"
 thiserror.workspace = true

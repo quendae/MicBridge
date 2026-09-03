@@ -1,16 +1,17 @@
 //! MicBridge — przenosi mikrofon z jednego komputera na drugi.
 //!
-//! Etap M2: Opus z FEC, bufor adaptacyjny i korekcja dryfu zegarów.
-//! Adres nadal podaje się ręcznie — wykrywanie mDNS, parowanie i okno
-//! dochodzą w M4.
+//! Wersja dla terminala. Sesje żyją w `mb_app`; tutaj zostaje wiersz poleceń,
+//! wypisywanie list i przechwycenie Ctrl-C. To samo `mb_app` napędza okno.
 
-mod recv;
-mod send;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use mb_app::ui::{Console, FixedCode};
+use mb_app::{recv, send};
 use mb_audio::Direction;
-use mb_proto::{CONTROL_PORT, SAMPLE_RATE};
+use mb_proto::{CONTROL_PORT, PROTOCOL_VERSION, SAMPLE_RATE};
 
 #[derive(Parser)]
 #[command(
@@ -33,11 +34,29 @@ enum Command {
     /// Wypisz urządzenia audio widoczne w systemie.
     Devices,
 
+    /// Wypisz sparowane maszyny.
+    Peers,
+
+    /// Zapomnij parowanie z podaną maszyną.
+    Forget {
+        /// Nazwa z listy `peers`.
+        #[arg(value_name = "NAZWA")]
+        peer: String,
+    },
+
+    /// Pokaż odbiorniki widoczne w sieci lokalnej.
+    Discover {
+        /// Jak długo słuchać odpowiedzi.
+        #[arg(long, default_value_t = 2500, value_name = "MS")]
+        window_ms: u64,
+    },
+
     /// Wysyłaj mikrofon do drugiego komputera.
     Send {
-        /// Adres odbiornika: `192.168.1.40` albo `192.168.1.40:47100`.
+        /// Odbiornik: adres, `adres:port` albo nazwa z `micbridge discover`.
+        /// Bez tej flagi szukamy go w sieci.
         #[arg(long, value_name = "ADRES")]
-        to: String,
+        to: Option<String>,
 
         /// Źródło: `default`, `@3` albo fragment nazwy, np. `yeti`.
         #[arg(long, default_value = "default", value_name = "URZĄDZENIE")]
@@ -54,6 +73,10 @@ enum Command {
         /// Diagnostyka: gub celowo tyle procent pakietów, żeby sprawdzić FEC.
         #[arg(long, default_value_t = 0.0, value_name = "PCT")]
         drop_pct: f32,
+
+        /// Kod parowania, gdy nie ma gdzie go wpisać (skrypty, usługi).
+        #[arg(long, value_name = "CYFRY")]
+        code: Option<String>,
     },
 
     /// Odbieraj mikrofon i wpuszczaj go w wirtualne urządzenie.
@@ -74,6 +97,10 @@ enum Command {
         /// Nie dopasowuj poduszki do jakości łącza — trzymaj zadaną wartość.
         #[arg(long)]
         fixed_buffer: bool,
+
+        /// Nie ogłaszaj się w sieci — druga strona poda adres ręcznie.
+        #[arg(long)]
+        no_announce: bool,
     },
 }
 
@@ -83,20 +110,68 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Devices => list_devices(),
+        Command::Discover { window_ms } => discover(window_ms),
+        Command::Peers => list_peers(),
+        Command::Forget { peer } => forget_peer(&peer),
         Command::Send {
             to,
             device,
             gain_db,
             bitrate,
             drop_pct,
-        } => send::run(&to, &device, gain_db, bitrate, drop_pct),
+            code,
+        } => send::run(
+            &send::Options {
+                to,
+                device,
+                gain_db,
+                bitrate,
+                drop_pct,
+            },
+            &*reporter(code),
+            stop_on_ctrl_c()?,
+        ),
         Command::Recv {
             listen,
             sink,
             buffer_ms,
             fixed_buffer,
-        } => recv::run(&listen, &sink, buffer_ms, !fixed_buffer),
+            no_announce,
+        } => recv::run(
+            &recv::Options {
+                listen,
+                sink,
+                buffer_ms,
+                adaptive: !fixed_buffer,
+                announce: !no_announce,
+            },
+            &Console,
+            stop_on_ctrl_c()?,
+        ),
     }
+}
+
+/// Kod parowania z wiersza poleceń zdejmuje pytanie z klawiatury — inaczej
+/// wpisuje go człowiek.
+fn reporter(code: Option<String>) -> Box<dyn mb_app::Reporter> {
+    match code {
+        Some(code) => Box::new(FixedCode {
+            inner: Console,
+            code,
+        }),
+        None => Box::new(Console),
+    }
+}
+
+/// Flaga, którą Ctrl-C opuszcza. Sesje same nie dotykają sygnałów, bo w oknie
+/// zatrzymuje je przycisk.
+fn stop_on_ctrl_c() -> Result<Arc<AtomicBool>> {
+    let running = Arc::new(AtomicBool::new(true));
+    let flag = Arc::clone(&running);
+    ctrlc::set_handler(move || flag.store(false, Ordering::Relaxed))
+        .context("nie mogę przechwycić Ctrl-C")?;
+    println!("Ctrl-C kończy.");
+    Ok(running)
 }
 
 fn init_tracing(verbose: u8) {
@@ -112,6 +187,60 @@ fn init_tracing(verbose: u8) {
         .with_target(false)
         .without_time()
         .init();
+}
+
+fn discover(window_ms: u64) -> Result<()> {
+    println!("Szukam odbiorników przez {window_ms} ms…");
+    let peers = mb_net::browse(std::time::Duration::from_millis(window_ms))?;
+
+    if peers.is_empty() {
+        println!("\nNic nie widzę.");
+        println!("  • czy na drugiej maszynie działa `micbridge recv`?");
+        println!("  • czy obie są w tej samej sieci?");
+        println!("  • część routerów Wi-Fi blokuje ruch multicast między klientami;");
+        println!("    wtedy zostaje `send --to 192.168.1.40`.");
+        return Ok(());
+    }
+
+    println!("\nODBIORNIKI");
+    for peer in &peers {
+        let note = if peer.compatible() {
+            String::new()
+        } else {
+            format!("  ← protokół {} zamiast {PROTOCOL_VERSION}", peer.version)
+        };
+        println!("  {:<24} {:<24}{note}", peer.name, peer.addr.to_string());
+    }
+    println!("\nWysyłanie: micbridge send --to \"{}\"", peers[0].name);
+    Ok(())
+}
+
+fn list_peers() -> Result<()> {
+    let store = mb_net::KeyStore::open()?;
+    let peers: Vec<&str> = store.peers().collect();
+    if peers.is_empty() {
+        println!("Nic jeszcze nie sparowane.");
+        println!("Parowanie dzieje się samo przy pierwszym połączeniu.");
+        return Ok(());
+    }
+    println!("SPAROWANE");
+    for peer in peers {
+        println!("  {peer}");
+    }
+    println!("\nKlucze: {}", store.path().display());
+    println!("Zapomnienie: micbridge forget <nazwa> — po obu stronach.");
+    Ok(())
+}
+
+fn forget_peer(peer: &str) -> Result<()> {
+    let mut store = mb_net::KeyStore::open()?;
+    if store.forget(peer)? {
+        println!("Zapomniane: „{peer}”.");
+        println!("Zrób to samo po drugiej stronie, inaczej nie dogadacie się bez kodu.");
+    } else {
+        println!("Nie mam nic zapisanego pod „{peer}”.");
+    }
+    Ok(())
 }
 
 fn list_devices() -> Result<()> {

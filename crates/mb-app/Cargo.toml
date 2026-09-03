@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[lib]
+name = "mb_app"
+path = "src/lib.rs"
+
 [[bin]]
 name = "micbridge"
 path = "src/main.rs"
@@ -12,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 mb-proto = { path = "../mb-proto" }
 mb-audio = { path = "../mb-audio" }
+mb-net = { path = "../mb-net" }
 mb-engine = { path = "../mb-engine" }
 anyhow.workspace = true
 clap.workspace = true
