@@ -24,11 +24,14 @@ eframe = { version = "0.32", default-features = false, features = [
     "x11",
 ] }
 
-# Ikona w zasobniku. Bez domyślnych cech, bo ciągną libxdo — biblioteka do
-# symulowania klawiatury, której do ikony nie potrzebujemy, a która jest
-# kolejnym pakietem do doinstalowania w Linuksie.
+# Ikona w zasobniku. Bez domyślnych cech, bo ciągną libxdo — bibliotekę do
+# symulowania klawiatury, potrzebną tylko skrótom w menu, których nie mamy,
+# a która jest kolejnym pakietem do doinstalowania w Linuksie.
 tray-icon = { version = "0.24", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# W Linuksie ikona żyje w pętli GTK, osobnej od pętli okna.
+# W Linuksie ikona żyje w pętli GTK, osobnej od pętli okna. Cecha „gtk” musi
+# wrócić: to za nią chowa się cała linuksowa implementacja menu, więc bez niej
+# tray-icon nie kompiluje się w ogóle.
+tray-icon = { version = "0.24", default-features = false, features = ["gtk"] }
 gtk = "0.18"
