@@ -177,8 +177,19 @@ impl JitterBuffer {
     /// tego drugiego przycięcia regulator dryfu ściągałby ten nadmiar
     /// kilkadziesiąt sekund.
     pub fn trim_to_target(&mut self) -> usize {
+        self.trim_to(self.target_frames)
+    }
+
+    /// To samo, ale do poziomu podanego z zewnątrz.
+    ///
+    /// Zanim odtwarzanie ruszy, poduszka musi wystarczyć nie tylko na sieć,
+    /// ale i na napełnienie pierścienia przed kartą — ten zapas przechodzi do
+    /// pierścienia w chwili startu. Przycięcie do samego celu zostawiłoby
+    /// pierścień pusty i strumień zacząłby się od serii przestojów.
+    pub fn trim_to(&mut self, frames: usize) -> usize {
+        let level = frames.clamp(1, self.max_frames);
         let mut dropped = 0;
-        while self.slots.len() > self.target_frames {
+        while self.slots.len() > level {
             let oldest = *self.slots.keys().next().expect("len > target >= 1");
             self.slots.remove(&oldest);
             self.trimmed += 1;
@@ -266,6 +277,16 @@ impl AdaptiveTarget {
         }
         self.current = (self.current + 2).min(self.max);
         self.last_grow = Some(now);
+    }
+
+    /// Wraca do stanu wyjściowego. Wołane, gdy sesja rusza od nowa — na
+    /// przykład gdy aplikacja dopiero otworzyła mikrofon. Poduszka urosła
+    /// wtedy z powodu ciszy po naszej stronie, a nie kłopotów w sieci, i
+    /// niesiona dalej byłaby czystym opóźnieniem.
+    pub fn reset(&mut self, start_frames: usize, now: Instant) {
+        self.current = start_frames.clamp(self.min, self.max);
+        self.clean_since = now;
+        self.last_grow = None;
     }
 
     /// Call periodically. Returns true when the target changed.
@@ -493,5 +514,23 @@ mod tests {
             t += Duration::from_secs(1);
         }
         assert_eq!(a.frames(), 6);
+    }
+
+    #[test]
+    fn reset_undoes_growth_from_a_silent_start() {
+        let now = Instant::now();
+        let mut t = AdaptiveTarget::new(3, 2, 40);
+        for k in 0..5 {
+            t.on_late(now + Duration::from_millis(k * 600));
+        }
+        assert!(t.frames() > 3, "poduszka urosła");
+
+        // Kłopoty brały się stąd, że nikt nas jeszcze nie słuchał.
+        t.reset(3, now);
+        assert_eq!(t.frames(), 3);
+        // Zerowanie zdejmuje też blokadę tempa — pierwszy realny kłopot po
+        // wznowieniu ma zadziałać od razu.
+        t.on_late(now);
+        assert_eq!(t.frames(), 5);
     }
 }

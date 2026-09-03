@@ -301,9 +301,13 @@ zapas na kaprysy sieci.
 
 ## Znane zachowania
 
-* Gdy karta rusza szczególnie wolno, poduszka startuje z 60–80 ms i regulator
-  ściąga ją do celu przez kilkanaście sekund. To jest wybór: zejście przez
-  resampling jest niesłyszalne, wyrzucenie ramek trzaskałoby.
+* Zanim jakakolwiek aplikacja otworzy „MicBridge”, PipeWire nie woła naszego
+  callbacku — odbiornik pisze wtedy `czekam` i trzyma poduszkę przyciętą.
+  Dźwięk sprzed minuty i tak nikomu się nie przyda, a bez tego bufor puchł do
+  sufitu i zaczynał wyrzucać ramki, zanim ktokolwiek czegoś posłuchał.
+* Łączne opóźnienie to poduszka plus pierścień przed kartą, a ten drugi
+  składnik dyktuje karta rozmiarem porcji, o jaką prosi. Stąd `bufor 30+45 ms`:
+  30 ms na sieć, 45 ms bo tyle naraz zabiera urządzenie.
 * Korekta dryfu w spoczynku waha się w granicach ±0,1%, bo głębokość bufora
   mierzymy w całych ramkach. To 0,017 półtonu — poniżej progu słyszalności.
 * `rubato` jest przypięte do 0.16, choć jest już 5.0; API zmieniło się na tyle,
