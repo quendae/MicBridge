@@ -109,7 +109,9 @@ impl App {
 
         let busy = self.recv.is_running();
         ui.add_enabled_ui(!busy, |ui| {
-            ui.horizontal(|ui| {
+            // Zawijane, bo w wąskim oknie ostatnie pole inaczej wychodzi poza
+            // krawędź i nie ma jak go dosięgnąć.
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Ujście:");
                 sink_picker(ui, &mut self.sink, &self.sinks);
                 ui.add_space(10.0);
@@ -162,7 +164,7 @@ impl App {
 
         let busy = self.send.is_running();
         ui.add_enabled_ui(!busy, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Mikrofon:");
                 mic_picker(ui, &mut self.device, &self.mics);
                 if ui
@@ -173,7 +175,7 @@ impl App {
                     self.reload_devices();
                 }
             });
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Do:");
                 self.target_picker(ui);
                 if ui.button("Szukaj").clicked() {
@@ -199,7 +201,7 @@ impl App {
         };
         egui::ComboBox::from_id_salt("cel")
             .selected_text(current)
-            .width(220.0)
+            .width(pick_width(ui))
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut self.target, Target::Auto, "jedyny w sieci")
                     .on_hover_text("Połącz się z odbiornikiem, jeśli jest dokładnie jeden.");
@@ -260,6 +262,12 @@ impl App {
             }
         }
     }
+}
+
+/// Szerokość listy rozwijanej: tyle, ile jest miejsca, ale nie więcej niż
+/// trzeba na najdłuższą nazwę urządzenia i nie mniej, niż da się przeczytać.
+fn pick_width(ui: &egui::Ui) -> f32 {
+    ui.available_width().clamp(140.0, 230.0)
 }
 
 fn label(running: bool) -> &'static str {
@@ -423,7 +431,7 @@ fn plot(
 fn sink_picker(ui: &mut egui::Ui, current: &mut String, sinks: &[String]) {
     egui::ComboBox::from_id_salt("ujscie")
         .selected_text(pretty_sink(current))
-        .width(230.0)
+        .width(pick_width(ui))
         .show_ui(ui, |ui| {
             ui.selectable_value(current, "auto".into(), pretty_sink("auto"))
                 .on_hover_text(
@@ -451,7 +459,7 @@ fn mic_picker(ui: &mut egui::Ui, current: &mut String, mics: &[String]) {
             "tone" => "ton próbny 440 Hz".to_string(),
             other => other.to_string(),
         })
-        .width(230.0)
+        .width(pick_width(ui))
         .show_ui(ui, |ui| {
             ui.selectable_value(current, "default".into(), "domyślny w systemie");
             for name in mics {

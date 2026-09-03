@@ -37,7 +37,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([680.0, 760.0])
-            .with_min_inner_size([520.0, 520.0])
+            .with_min_inner_size([460.0, 480.0])
             .with_title("MicBridge"),
         ..Default::default()
     };
@@ -93,8 +93,7 @@ enum Target {
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        cc.egui_ctx.set_zoom_factor(1.1);
+    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let mut app = Self {
             state: Arc::new(State::default()),
             recv: Engine::new(Which::Recv),
