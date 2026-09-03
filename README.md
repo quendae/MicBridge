@@ -10,9 +10,8 @@ Założenia, decyzje projektowe i plan działania: **[docs/ARCHITEKTURA.md](docs
 
 ## Stan: etap M3
 
-Silnik jest gotowy: Opus z FEC, bufor adaptacyjny, korekcja dryfu zegarów,
-a od M3 także wirtualne wejście po obu stronach. Brakuje tego, co czyni z tego
-produkt — wykrywania w sieci, parowania i okna.
+Program jest kompletny: silnik z M2, wirtualne wejście z M3, a od M4 także
+wykrywanie w sieci, parowanie, szyfrowanie i okno. Zostaje pakowanie.
 
 | Etap | Zakres | Stan |
 |------|--------|------|
@@ -20,11 +19,12 @@ produkt — wykrywania w sieci, parowania i okna.
 | M1 | PCM po UDP, wybór urządzeń, bufor jitter, kanał sterujący | **gotowe** |
 | M2 | Opus, FEC, bufor adaptacyjny, korekcja dryfu, resampling | **gotowe** |
 | M3 | wirtualne wejście: node PipeWire, wykrywanie VB-CABLE | **gotowe** — sprawdzone na Archu (PipeWire 1.6) i Windows 10 |
-| M4 | mDNS, parowanie SPAKE2, szyfrowanie, okno egui | wykrywanie i parowanie **gotowe**, okno w toku |
+| M4 | mDNS, parowanie SPAKE2, szyfrowanie, okno egui | **gotowe** |
 | M5 | pakiety deb/rpm/AUR/Flatpak/MSI | |
 
-Czego wciąż nie ma: okna. Reszta obietnicy — „zainstaluj na obu, uruchom,
-działa” — jest na miejscu.
+Czego wciąż nie ma: paczek instalacyjnych. Program trzeba na razie zbudować
+samemu, ale poza tym obietnica — „uruchom na obu, sparuj raz, działa” — jest
+na miejscu.
 
 ## Budowanie
 
@@ -47,16 +47,43 @@ Nagłówki ALSA są potrzebne, bo cpal linkuje się z nimi niezależnie od tego,
 docelowo pracujemy przez PipeWire. Nagłówki PipeWire i libclang idą do
 wirtualnego mikrofonu — `pipewire-rs` generuje wiązania w czasie budowania.
 
+Do okna dochodzą GTK i wskaźnik zasobnika — potrzebuje ich ikona w tacce.
+Samo `micbridge` (wiersz poleceń) zbuduje się bez nich:
+`cargo build --release -p mb-app`.
+
 ```bash
 # Debian / Ubuntu
-sudo apt install build-essential cmake pkg-config libasound2-dev libpipewire-0.3-dev libclang-dev
+sudo apt install build-essential cmake pkg-config libasound2-dev libpipewire-0.3-dev \
+    libclang-dev libgtk-3-dev libayatana-appindicator3-dev libxkbcommon-dev
 # Fedora
-sudo dnf install gcc cmake pkgconf-pkg-config alsa-lib-devel pipewire-devel clang-devel
+sudo dnf install gcc cmake pkgconf-pkg-config alsa-lib-devel pipewire-devel clang-devel \
+    gtk3-devel libayatana-appindicator-gtk3-devel libxkbcommon-devel
 # Arch
-sudo pacman -S base-devel cmake alsa-lib pipewire clang
+sudo pacman -S base-devel cmake alsa-lib pipewire clang gtk3 libayatana-appindicator libxkbcommon
 
 cargo build --release
 ```
+
+## Okno
+
+```bash
+micbridge-gui
+```
+
+Dwie połowy: **odbieranie** i **wysyłanie**, każda z własnym przełącznikiem.
+Można włączyć obie naraz — nic nie stoi na przeszkodzie, żeby jedna maszyna
+w tym samym czasie oddawała swój mikrofon i przyjmowała cudzy.
+
+Po obu stronach widać **opóźnienie i straty**, na bieżąco i na wykresie
+z ostatnich dwóch minut. Nadajnik nie ma jak zmierzyć opóźnienia sam, więc
+pokazuje liczbę zgłoszoną przez odbiornik — obie strony patrzą na tę samą.
+
+Zamknięcie okna chowa program do zasobnika, bo sesja potrafi grać godzinami
+i zamknięcie okna nie jest prośbą o jej przerwanie. Wyjście jest w menu ikony.
+W opcjach jest też uruchamianie razem z systemem — domyślnie wyłączone.
+
+Wiersz poleceń robi dokładnie to samo i zostaje na miejscu; okno i terminal
+korzystają z tego samego silnika.
 
 ## Użycie
 
@@ -139,7 +166,8 @@ pakiety są w sekcji [Budowanie](#linux).
 ### 1. Zależności i budowanie
 
 ```bash
-sudo pacman -S --needed base-devel cmake alsa-lib pipewire clang git
+sudo pacman -S --needed base-devel cmake alsa-lib pipewire clang git \
+    gtk3 libayatana-appindicator libxkbcommon
 # Rust, jeśli jeszcze go nie ma:
 sudo pacman -S --needed rustup && rustup default stable
 
