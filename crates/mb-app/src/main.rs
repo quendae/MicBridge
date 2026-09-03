@@ -62,8 +62,9 @@ enum Command {
         #[arg(long, default_value_t = format!("0.0.0.0:{CONTROL_PORT}"), value_name = "ADRES")]
         listen: String,
 
-        /// Ujście: `auto` szuka wirtualnego kabla, albo fragment nazwy.
-        #[arg(long, default_value = "auto", value_name = "URZĄDZENIE")]
+        /// Ujście: `auto` (Linux: własny mikrofon, Windows: wirtualny kabel),
+        /// `virtual`, `device` albo fragment nazwy urządzenia.
+        #[arg(long, default_value = "auto", value_name = "UJŚCIE")]
         sink: String,
 
         /// Startowa głębokość bufora jitter.
@@ -137,11 +138,7 @@ fn list_devices() -> Result<()> {
                 .channels
                 .map(|c| format!("{c} ch"))
                 .unwrap_or_else(|| "?".into());
-            let lowered = d.name.to_lowercase();
-            let virtual_hint = if mb_audio::VIRTUAL_SINK_HINTS
-                .iter()
-                .any(|h| lowered.contains(h))
-            {
+            let virtual_hint = if mb_audio::looks_like_virtual_cable(&d.name) {
                 "  ← wirtualny kabel"
             } else {
                 ""
@@ -159,6 +156,16 @@ fn list_devices() -> Result<()> {
          inne częstotliwości są przeliczane."
     );
     println!("Wskazywanie: --device \"yeti\" albo --device @3");
+    if cfg!(target_os = "linux") {
+        println!(
+            "Ujście: --sink auto tworzy własny mikrofon „{}” w PipeWire.",
+            mb_audio::DISPLAY_NAME
+        );
+        println!("        Nie ma go na liście powyżej — powstaje dopiero po połączeniu.");
+    } else {
+        println!("Ujście: --sink auto szuka wirtualnego kabla wśród wyjść;");
+        println!("        Windows nie pozwala programowi utworzyć własnego mikrofonu.");
+    }
     println!(
         "Bez mikrofonu: --device {} nadaje sinus 440 Hz — sprawdza całą ścieżkę.\n",
         send::TONE_SELECTOR

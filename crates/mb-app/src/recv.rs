@@ -42,6 +42,8 @@ pub fn run(listen: &str, sink: &str, buffer_ms: u32, adaptive: bool) -> Result<(
         .parse()
         .with_context(|| format!("`{listen}` nie jest adresem nasłuchu"))?;
 
+    mb_audio::sink::validate(sink)?;
+
     let target_frames = (buffer_ms / FRAME_MS).max(1) as usize;
     let max_frames = (MAX_BUFFER_MS / FRAME_MS) as usize;
 
@@ -127,10 +129,10 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
     // regulator dryfu ściągałby go potem kilkanaście sekund.
     let playback_started = Arc::new(AtomicBool::new(false));
 
-    let playback = {
+    let sink = {
         let starved = Arc::clone(&starved);
         let playback_started = Arc::clone(&playback_started);
-        mb_audio::start_playback(cfg.sink, SAMPLE_RATE, move |out| {
+        mb_audio::open_sink(cfg.sink, SAMPLE_RATE, move |out| {
             playback_started.store(true, Ordering::Relaxed);
             let got = consumer.pop_slice(out);
             if got < out.len() {
@@ -139,11 +141,11 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
             }
         })?
     };
-    let device_rate = playback.sample_rate;
+    let device_rate = sink.sample_rate();
     tracing::info!(
-        device = %playback.device_name,
-        channels = playback.channels,
+        sink = %sink.name(),
         rate = device_rate,
+        wejscie = sink.is_input_device(),
         "ujście otwarte"
     );
 
@@ -157,23 +159,27 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
         version: PROTOCOL_VERSION,
         ssrc,
         media_port: MEDIA_PORT,
-        sink: playback.device_name.clone(),
+        sink: sink.name().to_string(),
         host: hostname(),
     })
     .write_to(&mut control)?;
 
-    println!(
-        "\n{} ({}) → {}\n  źródło: {}{}",
-        hello.host,
-        peer.ip(),
-        playback.device_name,
-        hello.device,
-        if device_rate == SAMPLE_RATE {
-            String::new()
-        } else {
-            format!("\n  konwersja {SAMPLE_RATE} Hz → {device_rate} Hz")
+    println!("\n{} ({}) → {}", hello.host, peer.ip(), sink.name());
+    println!("  źródło: {}", hello.device);
+    if device_rate != SAMPLE_RATE {
+        println!("  konwersja {SAMPLE_RATE} Hz → {device_rate} Hz");
+    }
+    if sink.is_input_device() {
+        println!(
+            "  w aplikacji (Discord, OBS, gra) wybierz mikrofon „{}”",
+            mb_audio::DISPLAY_NAME
+        );
+    } else {
+        println!("  w aplikacji wybierz mikrofon odpowiadający temu urządzeniu");
+        if let Some(hint) = mb_audio::latency_hint(sink.name()) {
+            println!("  {hint}");
         }
-    );
+    }
 
     let jitter = Arc::new(Mutex::new(JitterBuffer::new(
         cfg.target_frames,

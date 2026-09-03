@@ -10,3 +10,8 @@ mb-proto = { path = "../mb-proto" }
 anyhow.workspace = true
 cpal.workspace = true
 tracing.workspace = true
+
+# Windows dostaje wirtualne wejście od cudzego sterownika (§4 architektury),
+# w Linuksie tworzymy własny węzeł i dlatego zależność jest tylko tutaj.
+[target.'cfg(target_os = "linux")'.dependencies]
+pipewire = "0.8"

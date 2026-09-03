@@ -19,15 +19,17 @@ jobs:
         os: [ubuntu-latest, windows-latest]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # cpal links against ALSA on Linux even when the runtime path is
-      # PipeWire, so the headers are needed to build at all.
+      # PipeWire, so those headers are needed to build at all. libpipewire and
+      # libclang are for the virtual source: pipewire-rs generates its bindings
+      # at build time.
       - name: Zależności systemowe (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev pkg-config
+          sudo apt-get install -y libasound2-dev libpipewire-0.3-dev libclang-dev pkg-config
 
       - uses: dtolnay/rust-toolchain@stable
         with:
