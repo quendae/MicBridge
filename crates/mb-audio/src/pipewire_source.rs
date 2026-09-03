@@ -17,16 +17,16 @@
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use pipewire as pw;
-use pw::spa;
-use spa::param::audio::{AudioFormat, AudioInfoRaw};
-use spa::pod::{serialize::PodSerializer, Object, Pod, Value};
-use spa::utils::Direction;
+use pw::{properties::properties, spa};
+use spa::pod::Pod;
 
-/// Nazwa węzła, po której użytkownik ma go rozpoznać. Trafia też do
-/// `VIRTUAL_SINK_HINTS`, żeby druga strona umiała go znaleźć automatycznie.
+/// Nazwa węzła, po której użytkownik ma go rozpoznać.
 pub const NODE_NAME: &str = "micbridge";
+
+/// f32 na próbkę, mono — stąd krok równy rozmiarowi jednej próbki.
+const STRIDE: usize = std::mem::size_of::<f32>();
 
 pub struct VirtualSource {
     /// Wysłanie czegokolwiek zatrzymuje pętlę PipeWire.
@@ -52,13 +52,13 @@ impl VirtualSource {
             .name("micbridge-pipewire".into())
             .spawn(move || {
                 if let Err(e) = run_loop(&description_owned, rate, fill, quit_rx, &ready_tx) {
-                    // Jeśli pętla padła po starcie, wysyłka i tak się nie uda —
-                    // odbiorca zdążył już odebrać potwierdzenie.
+                    // Jeśli pętla padła już po starcie, ta wysyłka przepadnie —
+                    // odbiorca zdążył odebrać potwierdzenie i nie słucha.
                     let _ = ready_tx.try_send(Err(e.to_string()));
                     tracing::error!(error = %e, "pętla PipeWire zakończona błędem");
                 }
             })
-            .context("nie mogę uruchomić wątku PipeWire")?;
+            .map_err(|e| anyhow!("nie mogę uruchomić wątku PipeWire: {e}"))?;
 
         match ready_rx.recv() {
             Ok(Ok(())) => {
@@ -72,7 +72,8 @@ impl VirtualSource {
             }
             Ok(Err(e)) => Err(anyhow!(
                 "nie mogę utworzyć wirtualnego mikrofonu w PipeWire: {e}.\n\
-                 Sprawdź, czy PipeWire działa: `systemctl --user status pipewire`.\n\
+                 Sprawdź, czy PipeWire działa: \
+                 `systemctl --user status pipewire wireplumber`.\n\
                  Na czystym PulseAudio ta ścieżka nie zadziała — wskaż ujście \
                  ręcznie przez --sink."
             )),
@@ -117,19 +118,23 @@ where
 {
     pw::init();
 
-    let mainloop = pw::main_loop::MainLoop::new(None).context("main loop")?;
-    let context = pw::context::Context::new(&mainloop).context("context")?;
-    let core = context.connect(None).context("połączenie z serwerem")?;
+    let mainloop = pw::main_loop::MainLoopRc::new(None)
+        .map_err(|e| anyhow!("nie mogę utworzyć pętli PipeWire: {e}"))?;
+    let context = pw::context::ContextRc::new(&mainloop, None)
+        .map_err(|e| anyhow!("nie mogę utworzyć kontekstu PipeWire: {e}"))?;
+    let core = context
+        .connect_rc(None)
+        .map_err(|e| anyhow!("nie mogę połączyć się z serwerem PipeWire: {e}"))?;
 
     let _quit = quit_rx.attach(mainloop.loop_(), {
         let mainloop = mainloop.clone();
         move |_| mainloop.quit()
     });
 
-    let stream = pw::stream::Stream::new(
+    let stream = pw::stream::StreamBox::new(
         &core,
         NODE_NAME,
-        pw::properties::properties! {
+        properties! {
             *pw::keys::MEDIA_TYPE => "Audio",
             // To jedno pole robi z nas mikrofon, a nie odtwarzacz.
             *pw::keys::MEDIA_CLASS => "Audio/Source",
@@ -140,7 +145,11 @@ where
             *pw::keys::AUDIO_CHANNELS => "1",
         },
     )
-    .context("nie mogę utworzyć strumienia")?;
+    .map_err(|e| anyhow!("nie mogę utworzyć strumienia: {e}"))?;
+
+    // Bufor roboczy trzymany przez callback: rośnie najwyżej raz, przy
+    // pierwszym większym kwancie. W ścieżce czasu rzeczywistego nie alokujemy.
+    let mut scratch = vec![0f32; 4096];
 
     let _listener = stream
         .add_local_listener_with_user_data(())
@@ -153,20 +162,21 @@ where
                 return;
             };
             let datas = buffer.datas_mut();
-            let Some(data) = datas.first_mut() else {
+            if datas.is_empty() {
                 return;
-            };
+            }
+            let data = &mut datas[0];
 
-            const STRIDE: usize = std::mem::size_of::<f32>();
             let written = match data.data() {
-                Some(bytes) => {
-                    let frames = bytes.len() / STRIDE;
-                    // Bezpieczne, bo `bytes` jest wyrównane do f32 przez
-                    // MAP_BUFFERS, a długość obcinamy do pełnych próbek.
-                    let samples = unsafe {
-                        std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut f32, frames)
-                    };
-                    fill(samples);
+                Some(slice) => {
+                    let frames = slice.len() / STRIDE;
+                    if scratch.len() < frames {
+                        scratch.resize(frames, 0.0);
+                    }
+                    fill(&mut scratch[..frames]);
+                    for (chunk, &sample) in slice.chunks_exact_mut(STRIDE).zip(scratch.iter()) {
+                        chunk.copy_from_slice(&sample.to_le_bytes());
+                    }
                     frames
                 }
                 None => 0,
@@ -174,23 +184,23 @@ where
 
             let chunk = data.chunk_mut();
             *chunk.offset_mut() = 0;
-            *chunk.stride_mut() = STRIDE as i32;
-            *chunk.size_mut() = (written * STRIDE) as u32;
+            *chunk.stride_mut() = STRIDE as _;
+            *chunk.size_mut() = (written * STRIDE) as _;
         })
         .register()
-        .context("nie mogę zarejestrować nasłuchu strumienia")?;
+        .map_err(|e| anyhow!("nie mogę zarejestrować nasłuchu strumienia: {e}"))?;
 
-    let mut info = AudioInfoRaw::new();
-    info.set_format(AudioFormat::F32LE);
-    info.set_rate(rate);
-    info.set_channels(1);
+    let mut audio_info = spa::param::audio::AudioInfoRaw::new();
+    audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
+    audio_info.set_rate(rate);
+    audio_info.set_channels(1);
 
-    let values: Vec<u8> = PodSerializer::serialize(
+    let values: Vec<u8> = pw::spa::pod::serialize::PodSerializer::serialize(
         std::io::Cursor::new(Vec::new()),
-        &Value::Object(Object {
+        &pw::spa::pod::Value::Object(pw::spa::pod::Object {
             type_: spa::sys::SPA_TYPE_OBJECT_Format,
             id: spa::sys::SPA_PARAM_EnumFormat,
-            properties: info.into(),
+            properties: audio_info.into(),
         }),
     )
     .map_err(|e| anyhow!("nie mogę zserializować formatu: {e}"))?
@@ -203,14 +213,14 @@ where
         .connect(
             // Piszemy do grafu; `media.class` wyżej decyduje, że graf widzi
             // w nas źródło.
-            Direction::Output,
+            spa::utils::Direction::Output,
             None,
             pw::stream::StreamFlags::AUTOCONNECT
                 | pw::stream::StreamFlags::MAP_BUFFERS
                 | pw::stream::StreamFlags::RT_PROCESS,
             &mut params,
         )
-        .context("nie mogę podłączyć strumienia")?;
+        .map_err(|e| anyhow!("nie mogę podłączyć strumienia: {e}"))?;
 
     // Od tego miejsca węzeł istnieje i aplikacje mogą go wybrać.
     let _ = ready.try_send(Ok(()));

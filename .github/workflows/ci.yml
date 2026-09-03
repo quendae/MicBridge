@@ -24,12 +24,12 @@ jobs:
       # cpal links against ALSA on Linux even when the runtime path is
       # PipeWire, so those headers are needed to build at all. libpipewire and
       # libclang are for the virtual source: pipewire-rs generates its bindings
-      # at build time.
+      # at build time. cmake builds the vendored libopus.
       - name: Zależności systemowe (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libpipewire-0.3-dev libclang-dev pkg-config
+          sudo apt-get install -y cmake libasound2-dev libpipewire-0.3-dev libclang-dev pkg-config
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -50,5 +50,34 @@ jobs:
         run: cargo test --workspace
 
       # Nothing here opens a sound card, so the runner needs no audio hardware.
+      - name: Build release
+        run: cargo build --workspace --release
+
+  # Ubuntu LTS niesie PipeWire sprzed kilku wydań, a pipewire-rs generuje
+  # wiązania z nagłówków systemu — na świeższym PipeWire to samo źródło potrafi
+  # się nie skompilować. Ten przebieg jest jedynym, który to wyłapie, i powstał
+  # dlatego, że raz nie wyłapał.
+  arch:
+    name: arch (świeży PipeWire)
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+
+    steps:
+      - name: Zależności systemowe
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed base-devel cmake git alsa-lib pipewire clang rustup
+
+      - uses: actions/checkout@v5
+
+      - name: Toolchain
+        run: rustup default stable
+
+      - name: Wersja PipeWire
+        run: pkg-config --modversion libpipewire-0.3
+
+      - name: Testy
+        run: cargo test --workspace
+
       - name: Build release
         run: cargo build --workspace --release

@@ -34,6 +34,7 @@ Czego wciąż nie ma, świadomie: szyfrowania i parowania, wykrywania w sieci
 winget install Rustlang.Rustup
 winget install Microsoft.VisualStudio.2022.BuildTools `
   --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+winget install Kitware.CMake
 cargo build --release
 ```
 
@@ -48,11 +49,11 @@ wirtualnego mikrofonu — `pipewire-rs` generuje wiązania w czasie budowania.
 
 ```bash
 # Debian / Ubuntu
-sudo apt install build-essential pkg-config libasound2-dev libpipewire-0.3-dev libclang-dev
+sudo apt install build-essential cmake pkg-config libasound2-dev libpipewire-0.3-dev libclang-dev
 # Fedora
-sudo dnf install gcc pkgconf-pkg-config alsa-lib-devel pipewire-devel clang-devel
+sudo dnf install gcc cmake pkgconf-pkg-config alsa-lib-devel pipewire-devel clang-devel
 # Arch
-sudo pacman -S base-devel alsa-lib pipewire clang
+sudo pacman -S base-devel cmake alsa-lib pipewire clang
 
 cargo build --release
 ```
@@ -131,7 +132,7 @@ pakiety są w sekcji [Budowanie](#linux).
 ### 1. Zależności i budowanie
 
 ```bash
-sudo pacman -S --needed base-devel alsa-lib pipewire clang git
+sudo pacman -S --needed base-devel cmake alsa-lib pipewire clang git
 # Rust, jeśli jeszcze go nie ma:
 sudo pacman -S --needed rustup && rustup default stable
 
@@ -142,8 +143,8 @@ cargo build --release
 
 Arch nie rozdziela pakietów deweloperskich, więc `pipewire` i `alsa-lib` niosą
 nagłówki od razu. `clang` jest potrzebny, bo `pipewire-rs` generuje wiązania
-w czasie budowania. Pierwsze budowanie kompiluje też libopus ze źródeł i trwa
-kilka minut.
+w czasie budowania, a `cmake` buduje libopus ze źródeł. Pierwsze budowanie
+trwa z tego powodu kilka minut.
 
 ```bash
 ./target/release/micbridge devices
