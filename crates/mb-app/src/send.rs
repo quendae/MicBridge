@@ -26,6 +26,11 @@ use mb_proto::{
 /// Sekunda dźwięku. Gdyby wątek sieciowy się zaciął, wolimy zgubić próbki niż
 /// rosnąć w nieskończoność.
 const RING_SAMPLES: usize = SAMPLE_RATE as usize;
+/// Ile czekamy na odpowiedzi z sieci. Pierwsza przychodzi zwykle w kilkadziesiąt
+/// milisekund, ale druga maszyna potrafi odezwać się później — a lista, która
+/// zmienia się pod palcami, jest gorsza niż lista, na którą się chwilę czeka.
+const DISCOVERY_WINDOW: Duration = Duration::from_millis(2500);
+
 /// Ile próbek naraz podajemy resamplerowi. Wielkość jest dowolna — dzięki temu
 /// nie musi dzielić częstotliwości urządzenia bez reszty.
 const RESAMPLE_CHUNK: usize = 480;
@@ -105,8 +110,17 @@ impl Dropper {
     }
 }
 
-pub fn run(to: &str, device: &str, gain_db: f32, bitrate: u32, drop_pct: f32) -> Result<()> {
-    let control_addr = resolve(to, CONTROL_PORT)?;
+pub fn run(
+    to: Option<&str>,
+    device: &str,
+    gain_db: f32,
+    bitrate: u32,
+    drop_pct: f32,
+) -> Result<()> {
+    let control_addr = match to {
+        Some(target) => target_addr(target)?,
+        None => sole_peer()?,
+    };
     let gain = 10f32.powf(gain_db / 20.0);
 
     // 1. Mikrofon najpierw — bez sensu zawracać głowę drugiej maszynie, jeśli
@@ -168,7 +182,7 @@ pub fn run(to: &str, device: &str, gain_db: f32, bitrate: u32, drop_pct: f32) ->
         channels: 1,
         frame_ms: FRAME_MS,
         device: source_name.clone(),
-        host: hostname(),
+        host: mb_net::hostname(),
     })
     .write_to(&mut control)?;
 
@@ -378,10 +392,68 @@ fn has_port(target: &str) -> bool {
     }
 }
 
-fn hostname() -> String {
-    std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_else(|_| "nieznany".into())
+/// Zamienia to, co użytkownik wpisał w `--to`, na adres.
+///
+/// Najpierw jako adres, bo tak jest bez czekania. Dopiero gdy to nie wyjdzie,
+/// szukamy w sieci maszyny o takiej nazwie — `--to salon` ma działać tak samo
+/// jak `--to 192.168.1.40`, skoro nazwę widać na liście z `discover`.
+fn target_addr(target: &str) -> Result<SocketAddr> {
+    match resolve(target, CONTROL_PORT) {
+        Ok(addr) => Ok(addr),
+        Err(e) => match peer_by_name(target)? {
+            Some(peer) => {
+                println!("„{}” to {}.", peer.name, peer.addr);
+                Ok(peer.addr)
+            }
+            None => Err(e),
+        },
+    }
+}
+
+fn peer_by_name(fragment: &str) -> Result<Option<mb_net::Peer>> {
+    let needle = fragment.to_lowercase();
+    Ok(discover()?
+        .into_iter()
+        .find(|p| p.name.to_lowercase().contains(&needle)))
+}
+
+/// Znajduje jedyny odbiornik w sieci albo tłumaczy, czego brakuje.
+fn sole_peer() -> Result<SocketAddr> {
+    let peers = discover()?;
+    match peers.len() {
+        0 => bail!(
+            "nie widzę żadnego odbiornika w sieci.\n\
+             Uruchom `micbridge recv` na drugiej maszynie. Jeśli już działa, \
+             router może blokować ruch multicast między klientami — wtedy podaj \
+             adres wprost: `--to 192.168.1.40`."
+        ),
+        1 => {
+            let peer = peers.into_iter().next().expect("jeden jest");
+            println!("Znalazłem „{}” pod {}.", peer.name, peer.addr);
+            Ok(peer.addr)
+        }
+        _ => {
+            println!("W sieci jest kilka odbiorników:");
+            for peer in &peers {
+                println!("  {:<24} {}", peer.name, peer.addr);
+            }
+            bail!("wskaż jeden: --to \"nazwa\" albo --to adres");
+        }
+    }
+}
+
+/// Przeszukuje sieć i odsiewa to, z czym i tak byśmy się nie dogadali.
+fn discover() -> Result<Vec<mb_net::Peer>> {
+    println!("Szukam odbiorników w sieci…");
+    let peers = mb_net::browse(DISCOVERY_WINDOW)?;
+    let (ok, obce): (Vec<_>, Vec<_>) = peers.into_iter().partition(mb_net::Peer::compatible);
+    for peer in obce {
+        println!(
+            "  pomijam „{}” — protokół w wersji {}, ja mówię {PROTOCOL_VERSION}",
+            peer.name, peer.version
+        );
+    }
+    Ok(ok)
 }
 
 #[cfg(test)]

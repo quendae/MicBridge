@@ -55,7 +55,7 @@ const MIN_BUFFER_FRAMES: usize = 2;
 /// się do sufitu bufora, zanim użytkownik zdążył wybrać mikrofon w aplikacji.
 const SINK_IDLE_MS: u64 = 250;
 
-pub fn run(listen: &str, sink: &str, buffer_ms: u32, adaptive: bool) -> Result<()> {
+pub fn run(listen: &str, sink: &str, buffer_ms: u32, adaptive: bool, announce: bool) -> Result<()> {
     let listen_addr: SocketAddr = listen
         .parse()
         .with_context(|| format!("`{listen}` nie jest adresem nasłuchu"))?;
@@ -68,6 +68,27 @@ pub fn run(listen: &str, sink: &str, buffer_ms: u32, adaptive: bool) -> Result<(
     let listener =
         TcpListener::bind(listen_addr).with_context(|| format!("nie mogę zająć {listen_addr}"))?;
     println!("Nasłuchuję na {listen_addr}. Ctrl-C kończy.");
+
+    // Ogłoszenie żyje tak długo jak nasłuch. Nie zrywamy go na czas sesji:
+    // druga maszyna ma widzieć ten komputer także wtedy, gdy akurat jest
+    // zajęty — inaczej lista migałaby zależnie od tego, kto się właśnie łączy.
+    let _beacon = if announce {
+        match mb_net::Advertiser::start(listen_addr.port()) {
+            Ok(a) => {
+                println!("Widoczny w sieci jako „{}”.", mb_net::hostname());
+                Some(a)
+            }
+            Err(e) => {
+                // Brak multicastu nie może zatrzymać odbiornika: adres da się
+                // wpisać ręcznie i to jest cała droga awaryjna.
+                tracing::warn!(error = %e, "nie mogę ogłosić się w sieci");
+                println!("Nie mogę ogłosić się w sieci — druga strona musi podać adres ręcznie.");
+                None
+            }
+        }
+    } else {
+        None
+    };
     println!(
         "Bufor jitter: {buffer_ms} ms ({target_frames} × {FRAME_MS} ms){}.",
         if adaptive {
@@ -180,7 +201,7 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
         ssrc,
         media_port: MEDIA_PORT,
         sink: sink.name().to_string(),
-        host: hostname(),
+        host: mb_net::hostname(),
     })
     .write_to(&mut control)?;
 
@@ -667,10 +688,4 @@ fn fresh_ssrc() -> u32 {
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.subsec_nanos() ^ (d.as_secs() as u32))
         .unwrap_or(0x7A31_F0C2)
-}
-
-fn hostname() -> String {
-    std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_else(|_| "nieznany".into())
 }

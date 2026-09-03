@@ -4,6 +4,7 @@ members = [
     "crates/mb-proto",
     "crates/mb-audio",
     "crates/mb-engine",
+    "crates/mb-net",
     "crates/mb-app",
 ]
 

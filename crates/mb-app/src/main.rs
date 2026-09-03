@@ -1,8 +1,7 @@
 //! MicBridge — przenosi mikrofon z jednego komputera na drugi.
 //!
-//! Etap M2: Opus z FEC, bufor adaptacyjny i korekcja dryfu zegarów.
-//! Adres nadal podaje się ręcznie — wykrywanie mDNS, parowanie i okno
-//! dochodzą w M4.
+//! Etap M4: do silnika z M2 i wirtualnego wejścia z M3 dochodzi wykrywanie
+//! w sieci — adresu nie trzeba już znać. Parowanie i okno są w toku.
 
 mod recv;
 mod send;
@@ -10,7 +9,7 @@ mod send;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use mb_audio::Direction;
-use mb_proto::{CONTROL_PORT, SAMPLE_RATE};
+use mb_proto::{CONTROL_PORT, PROTOCOL_VERSION, SAMPLE_RATE};
 
 #[derive(Parser)]
 #[command(
@@ -33,11 +32,19 @@ enum Command {
     /// Wypisz urządzenia audio widoczne w systemie.
     Devices,
 
+    /// Pokaż odbiorniki widoczne w sieci lokalnej.
+    Discover {
+        /// Jak długo słuchać odpowiedzi.
+        #[arg(long, default_value_t = 2500, value_name = "MS")]
+        window_ms: u64,
+    },
+
     /// Wysyłaj mikrofon do drugiego komputera.
     Send {
-        /// Adres odbiornika: `192.168.1.40` albo `192.168.1.40:47100`.
+        /// Odbiornik: adres, `adres:port` albo nazwa z `micbridge discover`.
+        /// Bez tej flagi szukamy go w sieci.
         #[arg(long, value_name = "ADRES")]
-        to: String,
+        to: Option<String>,
 
         /// Źródło: `default`, `@3` albo fragment nazwy, np. `yeti`.
         #[arg(long, default_value = "default", value_name = "URZĄDZENIE")]
@@ -74,6 +81,10 @@ enum Command {
         /// Nie dopasowuj poduszki do jakości łącza — trzymaj zadaną wartość.
         #[arg(long)]
         fixed_buffer: bool,
+
+        /// Nie ogłaszaj się w sieci — druga strona poda adres ręcznie.
+        #[arg(long)]
+        no_announce: bool,
     },
 }
 
@@ -83,19 +94,21 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Devices => list_devices(),
+        Command::Discover { window_ms } => discover(window_ms),
         Command::Send {
             to,
             device,
             gain_db,
             bitrate,
             drop_pct,
-        } => send::run(&to, &device, gain_db, bitrate, drop_pct),
+        } => send::run(to.as_deref(), &device, gain_db, bitrate, drop_pct),
         Command::Recv {
             listen,
             sink,
             buffer_ms,
             fixed_buffer,
-        } => recv::run(&listen, &sink, buffer_ms, !fixed_buffer),
+            no_announce,
+        } => recv::run(&listen, &sink, buffer_ms, !fixed_buffer, !no_announce),
     }
 }
 
@@ -112,6 +125,32 @@ fn init_tracing(verbose: u8) {
         .with_target(false)
         .without_time()
         .init();
+}
+
+fn discover(window_ms: u64) -> Result<()> {
+    println!("Szukam odbiorników przez {window_ms} ms…");
+    let peers = mb_net::browse(std::time::Duration::from_millis(window_ms))?;
+
+    if peers.is_empty() {
+        println!("\nNic nie widzę.");
+        println!("  • czy na drugiej maszynie działa `micbridge recv`?");
+        println!("  • czy obie są w tej samej sieci?");
+        println!("  • część routerów Wi-Fi blokuje ruch multicast między klientami;");
+        println!("    wtedy zostaje `send --to 192.168.1.40`.");
+        return Ok(());
+    }
+
+    println!("\nODBIORNIKI");
+    for peer in &peers {
+        let note = if peer.compatible() {
+            String::new()
+        } else {
+            format!("  ← protokół {} zamiast {PROTOCOL_VERSION}", peer.version)
+        };
+        println!("  {:<24} {:<24}{note}", peer.name, peer.addr.to_string());
+    }
+    println!("\nWysyłanie: micbridge send --to \"{}\"", peers[0].name);
+    Ok(())
 }
 
 fn list_devices() -> Result<()> {

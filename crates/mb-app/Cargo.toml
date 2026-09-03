@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 mb-proto = { path = "../mb-proto" }
 mb-audio = { path = "../mb-audio" }
+mb-net = { path = "../mb-net" }
 mb-engine = { path = "../mb-engine" }
 anyhow.workspace = true
 clap.workspace = true

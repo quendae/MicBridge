@@ -1,0 +1,17 @@
+[package]
+name = "mb-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+mb-proto = { path = "../mb-proto" }
+anyhow.workspace = true
+tracing.workspace = true
+# Czysty Rust z własnym stosem mDNS. Popularniejszy `zeroconf` deleguje do
+# Avahi i Bonjour, czyli kazałby użytkownikowi Windows doinstalować usługę
+# Apple'a — jedna zależność za dużo dla programu, którego całą obietnicą jest
+# „zainstaluj i działa”.
+mdns-sd = "0.21"
+gethostname = "1.0"
