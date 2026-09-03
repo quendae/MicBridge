@@ -11,6 +11,7 @@
 mod autostart;
 mod engine;
 mod state;
+mod tray;
 mod widgets;
 
 use std::sync::Arc;
@@ -74,6 +75,12 @@ struct App {
     peers_refreshed: Option<Instant>,
     /// Wyszukiwanie chodzi na osobnym wątku — trwa sekundy, a okno ma być żywe.
     peers_pending: Option<std::sync::mpsc::Receiver<Vec<mb_net::Peer>>>,
+
+    /// Ikona w zasobniku. `None`, gdy system jej nie daje — wtedy zamknięcie
+    /// okna po prostu kończy program, bo inaczej nie byłoby jak do niego wrócić.
+    tray: Option<tray::Tray>,
+    /// Czy okno jest schowane w zasobniku.
+    hidden: bool,
 }
 
 /// Do kogo nadajemy.
@@ -106,6 +113,14 @@ impl App {
             peers: Vec::new(),
             peers_refreshed: None,
             peers_pending: None,
+            tray: match tray::Tray::new() {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    tracing::warn!(error = %e, "brak ikony w zasobniku");
+                    None
+                }
+            },
+            hidden: false,
         };
         app.reload_devices();
         app
@@ -186,10 +201,14 @@ impl eframe::App for App {
         self.recv.reap();
         self.send.reap();
         self.collect_peers(ctx);
+        self.handle_tray(ctx);
+        self.handle_close(ctx);
 
-        // Sesje meldują co sekundę, więc okno musi samo wracać do życia —
-        // bez tego stan zamarłby do najbliższego ruchu myszą.
-        ctx.request_repaint_after(Duration::from_millis(500));
+        // Sesje meldują co sekundę, więc okno musi samo wracać do życia — bez
+        // tego stan zamarłby do najbliższego ruchu myszą. Schowane budzimy
+        // częściej, nie rzadziej: to jedyna pętla, która zauważy kliknięcie
+        // w ikonę, a wtedy pół sekundy zwłoki już widać.
+        ctx.request_repaint_after(Duration::from_millis(if self.hidden { 250 } else { 500 }));
 
         egui::TopBottomPanel::top("naglowek").show(ctx, |ui| {
             ui.add_space(6.0);
@@ -217,6 +236,44 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.recv.stop();
         self.send.stop();
+    }
+}
+
+impl App {
+    /// Zamknięcie okna chowa program do zasobnika zamiast go kończyć.
+    ///
+    /// Sesja potrafi grać godzinami; zamknięcie okna nie jest prośbą o jej
+    /// przerwanie. Wyjście jest w menu ikony — a gdy ikony nie ma, zamknięcie
+    /// znaczy to, co zwykle.
+    fn handle_close(&mut self, ctx: &egui::Context) {
+        if !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+        if self.tray.is_none() {
+            return;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        self.hidden = true;
+    }
+
+    fn handle_tray(&mut self, ctx: &egui::Context) {
+        let Some(tray) = &self.tray else {
+            return;
+        };
+        match tray.poll() {
+            Some(tray::Action::Show) => {
+                self.hidden = false;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+            Some(tray::Action::Quit) => {
+                self.recv.stop();
+                self.send.stop();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            None => {}
+        }
     }
 }
 
