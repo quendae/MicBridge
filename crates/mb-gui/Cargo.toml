@@ -1,0 +1,25 @@
+[package]
+name = "mb-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "micbridge-gui"
+path = "src/main.rs"
+
+[dependencies]
+mb-app = { path = "../mb-app" }
+mb-audio = { path = "../mb-audio" }
+mb-net = { path = "../mb-net" }
+mb-proto = { path = "../mb-proto" }
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+eframe = { version = "0.32", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "wayland",
+    "x11",
+] }
