@@ -8,7 +8,7 @@ Założenia, decyzje projektowe i plan działania: **[docs/ARCHITEKTURA.md](docs
 (ta sama treść z diagramami, do czytania w przeglądarce:
 [dokument techniczny](https://claude.ai/code/artifact/c6f3e44a-ac5e-4cda-8299-fce46b05237f)).
 
-## Stan: etap M3
+## Stan: etap M4
 
 Program jest kompletny: silnik z M2, wirtualne wejście z M3, a od M4 także
 wykrywanie w sieci, parowanie, szyfrowanie i okno. Zostaje pakowanie.
