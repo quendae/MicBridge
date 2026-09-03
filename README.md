@@ -157,6 +157,108 @@ micbridge send --to 127.0.0.1 --device tone
 TCP 47100 (sterowanie), UDP 47101 (media). Odbiornik musi mieć oba otwarte
 w zaporze.
 
+## Test w Windows od zera
+
+### 1. Narzędzia i budowanie
+
+```powershell
+winget install Rustlang.Rustup
+winget install Microsoft.VisualStudio.2022.BuildTools `
+  --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+winget install Kitware.CMake
+winget install Git.Git
+
+git clone https://github.com/quendae/MicBridge.git
+cd MicBridge
+cargo build --release
+```
+
+Po restarcie terminala (żeby zobaczył `cargo` i `cmake`) powstaną dwa programy:
+`target\release\micbridge.exe` i `target\release\micbridge-gui.exe`.
+
+### 2. Zapora — bez tego maszyny się nie zobaczą
+
+Windows domyślnie odcina ruch multicast, którym działa wykrywanie, i przy
+pierwszym uruchomieniu pyta tylko o porty, na których program nasłuchuje.
+Najprościej dodać reguły z góry, w terminalu **uruchomionym jako administrator**:
+
+```powershell
+netsh advfirewall firewall add rule name="MicBridge mDNS" `
+  dir=in action=allow protocol=UDP localport=5353
+netsh advfirewall firewall add rule name="MicBridge sterowanie" `
+  dir=in action=allow protocol=TCP localport=47100
+netsh advfirewall firewall add rule name="MicBridge media" `
+  dir=in action=allow protocol=UDP localport=47101
+```
+
+Reguła mDNS potrzebna jest po obu stronach — jedna maszyna pyta, druga
+odpowiada, a odpowiedź też przychodzi z zewnątrz. Reguły na 47100 i 47101
+potrzebuje tylko ta maszyna, która **odbiera**; nie zaszkodzi zostawić obu.
+
+Gdyby zamiast tego wyskoczyło okienko zapory przy starcie, zaznacz **sieci
+prywatne**. Sieć musi być w Windows oznaczona jako prywatna, nie publiczna —
+w publicznej system blokuje wykrywanie niezależnie od reguł.
+
+Skasowanie reguł, gdyby były niepotrzebne:
+
+```powershell
+netsh advfirewall firewall delete rule name="MicBridge mDNS"
+netsh advfirewall firewall delete rule name="MicBridge sterowanie"
+netsh advfirewall firewall delete rule name="MicBridge media"
+```
+
+### 3. Gdy Windows ma odbierać
+
+Windows nie pozwala programowi utworzyć mikrofonu bez sterownika trybu jądra,
+więc potrzebny jest jednorazowo [VB-CABLE](https://vb-audio.com/Cable/):
+rozpakuj, uruchom `VBCABLE_Setup_x64.exe` jako administrator, zrestartuj
+komputer. Potem w `VBCABLE_ControlPanel.exe` ustaw *Max Latency* na **2048**
+sampli — domyślne 7168 dokłada około 130 ms, czyli więcej niż cała reszta
+łańcucha razem wzięta.
+
+Sprawdzenie, czy program go widzi:
+
+```powershell
+.\target\release\micbridge.exe devices
+```
+
+`CABLE Input` ma się pojawić wśród wyjść, z dopiskiem „← wirtualny kabel".
+W aplikacji (Discord, OBS, gra) wybiera się wtedy mikrofon **CABLE Output**.
+
+Gdy Windows tylko **wysyła**, VB-CABLE nie jest do niczego potrzebny.
+
+### 4. Czy maszyny się widzą
+
+Na maszynie odbierającej:
+
+```powershell
+.\target\release\micbridge.exe recv --sink auto
+```
+
+Na drugiej:
+
+```bash
+./target/release/micbridge discover
+```
+
+Odbiornik ma się pojawić na liście pod nazwą swojego komputera. Jeśli lista
+jest pusta, a `recv` działa — to zapora albo sieć oznaczona jako publiczna.
+Droga awaryjna jest zawsze ta sama: `send --to 192.168.1.40`, adres z `ipconfig`.
+
+### 5. Parowanie
+
+```bash
+./target/release/micbridge send --device tone
+```
+
+Odbiornik pokaże sześciocyfrowy kod, nadajnik poprosi o jego przepisanie. Kod
+podaje się raz; od następnego uruchomienia maszyny łączą się same. To samo
+w oknie: `micbridge-gui`, kod pojawia się na banerze u góry.
+
+Sprawdzenie, że dźwięk płynie — w Windows przez „Nasłuchuj tego urządzenia"
+we właściwościach `CABLE Output` (zakładka *Nasłuchiwanie*), albo po prostu
+wybierając `CABLE Output` jako mikrofon w dowolnej aplikacji.
+
 ## Test w Linuksie od zera
 
 Poniżej Arch (i pochodne, m.in. Omarchy — PipeWire i Wireplumber są tam
