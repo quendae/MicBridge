@@ -8,10 +8,11 @@ Założenia, decyzje projektowe i plan działania: **[docs/ARCHITEKTURA.md](docs
 (ta sama treść z diagramami, do czytania w przeglądarce:
 [dokument techniczny](https://claude.ai/code/artifact/c6f3e44a-ac5e-4cda-8299-fce46b05237f)).
 
-## Stan: etap M2
+## Stan: etap M3
 
-Działa Opus z FEC, bufor adaptacyjny i korekcja dryfu zegarów. Silnik jest
-gotowy; brakuje wszystkiego, co czyni z tego produkt.
+Silnik jest gotowy: Opus z FEC, bufor adaptacyjny, korekcja dryfu zegarów,
+a od M3 także wirtualne wejście po obu stronach. Brakuje tego, co czyni z tego
+produkt — wykrywania w sieci, parowania i okna.
 
 | Etap | Zakres | Stan |
 |------|--------|------|
@@ -117,6 +118,128 @@ micbridge send --to 127.0.0.1 --device tone
 TCP 47100 (sterowanie), UDP 47101 (media). Odbiornik musi mieć oba otwarte
 w zaporze.
 
+## Test w Linuksie od zera
+
+Poniżej Arch (i pochodne, m.in. Omarchy — PipeWire i Wireplumber są tam
+domyślne, więc nic nie trzeba przestawiać). Dla innych rodzin dystrybucji
+pakiety są w sekcji [Budowanie](#linux).
+
+> Dopóki [PR #1](https://github.com/quendae/MicBridge/pull/1) nie jest
+> wmergowany, wirtualny mikrofon żyje na gałęzi — po sklonowaniu zrób
+> `git checkout m3-wirtualne-wejscie`.
+
+### 1. Zależności i budowanie
+
+```bash
+sudo pacman -S --needed base-devel alsa-lib pipewire clang git
+# Rust, jeśli jeszcze go nie ma:
+sudo pacman -S --needed rustup && rustup default stable
+
+git clone https://github.com/quendae/MicBridge.git
+cd MicBridge
+cargo build --release
+```
+
+Arch nie rozdziela pakietów deweloperskich, więc `pipewire` i `alsa-lib` niosą
+nagłówki od razu. `clang` jest potrzebny, bo `pipewire-rs` generuje wiązania
+w czasie budowania. Pierwsze budowanie kompiluje też libopus ze źródeł i trwa
+kilka minut.
+
+```bash
+./target/release/micbridge devices
+```
+
+Lista przyjdzie przez ALSA, więc wygląda inaczej niż w `pavucontrol` — zobaczysz
+pozycje w rodzaju `pipewire`, `default`, `sysdefault` obok kart sprzętowych.
+Do wskazania mikrofonu i tak wystarczy fragment nazwy.
+
+### 2. Czy wirtualny mikrofon powstaje
+
+Ujście otwiera się dopiero po nawiązaniu sesji — mikrofon pojawia się w systemie
+wtedy, gdy jest co przez niego puścić. Potrzebne są więc dwa terminale.
+
+```bash
+# terminal 1 — odbiornik
+./target/release/micbridge recv --sink auto
+
+# terminal 2 — nadajnik, syntetyczny ton zamiast mikrofonu
+./target/release/micbridge send --to 127.0.0.1 --device tone
+```
+
+Odbiornik powinien wypisać `wirtualne wejście utworzone` oraz linijkę
+`w aplikacji (Discord, OBS, gra) wybierz mikrofon „MicBridge”`. W trzecim
+terminalu:
+
+```bash
+wpctl status | grep -i micbridge
+# albo
+pactl list sources short | grep -i micbridge
+```
+
+Od tej chwili „MicBridge” jest na liście mikrofonów w `pavucontrol`, Discordzie
+i OBS-ie.
+
+### 3. Czy płynie przez niego dźwięk
+
+```bash
+timeout 5 pw-record --target micbridge /tmp/mic.wav
+pw-play /tmp/mic.wav
+```
+
+Powinien być czysty ton 440 Hz, bez trzasków i przerw. To sprawdza cały
+łańcuch: kodowanie, sieć, bufor jitter, resampling i wirtualne wejście.
+
+Odbiornik wypisuje co sekundę stan bufora, straty i korektę dryfu. Przy pętli
+lokalnej bufor ma stanąć na zadanych 30 ms, straty na zerze, a korekta dryfu
+zejść w okolice zera w kilkanaście sekund.
+
+### 4. Odporność na straty
+
+```bash
+./target/release/micbridge send --to 127.0.0.1 --device tone --drop-pct 5
+```
+
+Gubi celowo co dwudziesty pakiet. Licznik `FEC` po stronie odbiornika ma rosnąć,
+`cel` bufora zostać na 30 ms, a ton w `pw-record` brzmieć dalej gładko — od tego
+jest korekcja błędów w Opusie.
+
+### 5. Między maszynami
+
+Na Linuksie:
+
+```bash
+./target/release/micbridge recv --sink auto
+```
+
+Na Windows (`ip a` po stronie Linuksa poda adres):
+
+```powershell
+micbridge.exe send --to 192.168.1.42 --device "yeti"
+```
+
+Kierunek odwrotny działa tą samą ścieżką kodu — wtedy w Linuksie uruchamiasz
+`send`, a w Windows `recv --sink auto`, i tam potrzebny jest
+[VB-CABLE](https://vb-audio.com/Cable/).
+
+Odbiornik musi mieć otwarte **TCP 47100** i **UDP 47101**. Omarchy domyślnie
+nie stawia zapory; jeśli ją włączyłeś:
+
+```bash
+sudo ufw allow 47100/tcp && sudo ufw allow 47101/udp
+```
+
+### Gdy coś nie gra
+
+| Objaw | Co sprawdzić |
+|---|---|
+| `nie mogę utworzyć wirtualnego mikrofonu` | `systemctl --user status pipewire pipewire-pulse wireplumber` |
+| Nie ma „MicBridge” na liście | Czy nadajnik jest połączony — węzeł powstaje dopiero z sesją |
+| Trzaski, `NIEDOMIAR` w logu | Podnieś poduszkę: `recv --buffer-ms 60` |
+| Bufor rośnie i nie wraca | Zgłoś z logiem `-vv` — to regulator dryfu, nie sieć |
+| Nadajnik nie widzi mikrofonu | `micbridge devices`, potem `--device "<fragment nazwy>"` |
+
+Więcej logów: `-v` (debug) albo `-vv` (trace) przy dowolnej komendzie.
+
 ## Układ kodu
 
 ```
@@ -184,6 +307,11 @@ zapas na kaprysy sieci.
   mierzymy w całych ramkach. To 0,017 półtonu — poniżej progu słyszalności.
 * `rubato` jest przypięte do 0.16, choć jest już 5.0; API zmieniło się na tyle,
   że aktualizacja to osobne zadanie.
+* Wirtualny mikrofon istnieje tylko w trakcie sesji, bo ujście otwiera się
+  dopiero po uzgodnieniu. Aplikacja, która wylistowała mikrofony wcześniej,
+  zobaczy „MicBridge” dopiero po odświeżeniu listy. Do rozstrzygnięcia w M4,
+  gdy dojdzie okno: wtedy węzeł może istnieć przez cały czas, kiedy odbiór jest
+  włączony.
 
 ## Licencja
 
