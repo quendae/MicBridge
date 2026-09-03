@@ -143,6 +143,12 @@ where
             *pw::keys::NODE_DESCRIPTION => description,
             *pw::keys::NODE_VIRTUAL => "true",
             *pw::keys::AUDIO_CHANNELS => "1",
+            // Prośba o kwant równy naszej ramce. Graf może dać większy, jeśli
+            // wymusza go inny węzeł — dlatego strona odbiorcza i tak mierzy,
+            // ile naprawdę dostaje — ale bez tego PipeWire potrafi wybrać
+            // kwant rzędu stu milisekund i sam dołożyć tyle opóźnienia.
+            *pw::keys::NODE_LATENCY => "480/48000",
+            *pw::keys::NODE_RATE => "1/48000",
         },
     )
     .map_err(|e| anyhow!("nie mogę utworzyć strumienia: {e}"))?;
@@ -161,6 +167,12 @@ where
                 // Graf nie ma dla nas bufora; następny cykl go przyniesie.
                 return;
             };
+            // Ile ramek graf chce w tym cyklu. Musi paść przed `datas_mut`,
+            // które pożycza bufor na wyłączność. Zmapowany bufor bywa dużo
+            // większy od kwantu i wypełnianie go w całości znaczyłoby
+            // produkowanie dźwięku, o który nikt nie prosił.
+            let requested = buffer.requested() as usize;
+
             let datas = buffer.datas_mut();
             if datas.is_empty() {
                 return;
@@ -169,7 +181,12 @@ where
 
             let written = match data.data() {
                 Some(slice) => {
-                    let frames = slice.len() / STRIDE;
+                    let capacity = slice.len() / STRIDE;
+                    let frames = if requested == 0 {
+                        capacity
+                    } else {
+                        requested.min(capacity)
+                    };
                     if scratch.len() < frames {
                         scratch.resize(frames, 0.0);
                     }

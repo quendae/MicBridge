@@ -14,4 +14,7 @@ tracing.workspace = true
 # Windows dostaje wirtualne wejście od cudzego sterownika (§4 architektury),
 # w Linuksie tworzymy własny węzeł i dlatego zależność jest tylko tutaj.
 [target.'cfg(target_os = "linux")'.dependencies]
-pipewire = "0.10"
+# v0_3_49 odsłania Buffer::requested() — bez tego nie wiadomo, ile ramek graf
+# faktycznie chce w tym cyklu. PipeWire 0.3.49 jest z 2022 roku, więc próg
+# niczego realnego nie odcina.
+pipewire = { version = "0.10", features = ["v0_3_49"] }

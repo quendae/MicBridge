@@ -28,10 +28,15 @@ use mb_proto::{
 };
 
 const RING_SAMPLES: usize = SAMPLE_RATE as usize;
-/// Ile dźwięku trzymać przed callbackiem. Dwie ramki wystarczą, żeby nie
-/// zagłodzić karty. To jest stałe opóźnienie lokalne, nie bufor sieciowy —
-/// dlatego regulator dryfu celuje w głębokość bufora jitter, a nie w sumę.
-const RING_TARGET: usize = FRAME_SAMPLES * 2;
+/// Dolna granica zapasu przed callbackiem — dwie ramki.
+///
+/// Górna bierze się z tego, o ile karta faktycznie prosi. Stały zapas dwóch
+/// ramek wystarczał przy WASAPI, ale PipeWire potrafi wołać o sto milisekund
+/// naraz: wtedy każde wywołanie dostawało 20 ms dźwięku i 80 ms ciszy, a bufor
+/// jitter puchł do sufitu, bo pacer dolewał tylko do własnego progu.
+const RING_MIN: usize = FRAME_SAMPLES * 2;
+/// Ile razy większy zapas trzymać niż największa zaobserwowana porcja.
+const RING_HEADROOM: usize = 2;
 /// Górna granica bufora jitter — powyżej wolimy uciąć niż rosnąć.
 const MAX_BUFFER_MS: u32 = 400;
 /// Dolna granica poduszki: jedna ramka nie przetrwa żadnego przestawienia.
@@ -123,6 +128,9 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
     let rb = HeapRb::<f32>::new(RING_SAMPLES);
     let (mut producer, mut consumer) = rb.split();
     let starved = Arc::new(AtomicU64::new(0));
+    // Największa porcja, o jaką poprosiło ujście. Pacer trzyma pierścień
+    // powyżej tej wartości, bo inaczej nie ma szans jej pokryć.
+    let request = Arc::new(AtomicU64::new(RING_MIN as u64));
     // Karta dźwiękowa rusza z opóźnieniem rzędu sekundy. Gdyby pacer zaczął
     // wtedy opróżniać bufor, przycięcie poduszki wypadłoby przed startem
     // urządzenia i cały nadmiar zebrany w międzyczasie zostałby na stałe —
@@ -132,8 +140,10 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
     let sink = {
         let starved = Arc::clone(&starved);
         let playback_started = Arc::clone(&playback_started);
+        let request = Arc::clone(&request);
         mb_audio::open_sink(cfg.sink, SAMPLE_RATE, move |out| {
             playback_started.store(true, Ordering::Relaxed);
+            request.fetch_max(out.len() as u64, Ordering::Relaxed);
             let got = consumer.pop_slice(out);
             if got < out.len() {
                 out[got..].fill(0.0);
@@ -256,6 +266,7 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
         let ring_samples = Arc::clone(&ring_samples);
         let shared = Arc::clone(&shared);
         let playback_started = Arc::clone(&playback_started);
+        let request = Arc::clone(&request);
         let adaptive = cfg.adaptive;
         let start_frames = cfg.target_frames;
         let max_frames = cfg.max_frames;
@@ -269,6 +280,7 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
                 &ring_samples,
                 &shared,
                 &playback_started,
+                &request,
                 device_rate,
                 adaptive,
                 start_frames,
@@ -282,6 +294,7 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
 
     // --- raportowanie -------------------------------------------------------
     let mut last = Instant::now();
+    let mut seen_overflow = 0u64;
     while running.load(Ordering::Relaxed) && live.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(100));
         if last.elapsed() < Duration::from_secs(1) {
@@ -289,9 +302,16 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
         }
         last = Instant::now();
 
-        let (depth, loss, late, recovered, stalls) = {
+        let (depth, loss, late, recovered, stalls, overflow) = {
             let Ok(jb) = jitter.lock() else { break };
-            (jb.depth(), jb.loss_pct(), jb.late, jb.recovered, jb.stalls)
+            (
+                jb.depth(),
+                jb.loss_pct(),
+                jb.late,
+                jb.recovered,
+                jb.stalls,
+                jb.dropped_overflow,
+            )
         };
         let ring_ms = ring_samples.load(Ordering::Relaxed) as f32 * 1000.0 / device_rate as f32;
         let jitter_buf_ms = depth as f32 * FRAME_MS as f32;
@@ -305,12 +325,17 @@ fn session(mut control: TcpStream, cfg: &SessionConfig, running: &Arc<AtomicBool
             shared.setpoint(),
             shared.jitter(),
             shared.correction() * 100.0,
-            if starved_now > 0 {
-                format!("   NIEDOMIAR {starved_now}")
-            } else {
-                String::new()
+            // Przepełnienie bufora nie liczy się jako strata pakietu, ale
+            // wyrzucone ramki słychać tak samo — bez tego licznika stan
+            // „strat 0,0%” towarzyszył rwącemu się dźwiękowi.
+            match (starved_now, overflow.saturating_sub(seen_overflow)) {
+                (0, 0) => String::new(),
+                (s, 0) => format!("   NIEDOMIAR {s}"),
+                (0, o) => format!("   WYRZUCONO {o} ramek (bufor pełny)"),
+                (s, o) => format!("   NIEDOMIAR {s}   WYRZUCONO {o}"),
             }
         );
+        seen_overflow = overflow;
 
         let report = ControlMsg::Stats(Stats {
             lost_pct: loss,
@@ -348,6 +373,7 @@ fn pace<P: Producer<Item = f32> + Observer>(
     ring_samples: &AtomicU64,
     shared: &SharedStats,
     playback_started: &AtomicBool,
+    request: &AtomicU64,
     device_rate: u32,
     adaptive: bool,
     start_frames: usize,
@@ -368,6 +394,9 @@ fn pace<P: Producer<Item = f32> + Observer>(
     shared.set_setpoint(drift.setpoint_ms());
 
     let mut last_tick = Instant::now();
+    // Poduszkę przycinamy drugi raz, gdy pierścień jest już pełny — patrz
+    // `JitterBuffer::trim_to_target`.
+    let mut primed = false;
     // Poduszkę podnoszą wyłącznie pakiety spóźnione i puste przebiegi — one
     // znaczą, że czekaliśmy za krótko. Zwykła strata nic o tym nie mówi.
     let mut seen_late = 0u64;
@@ -383,7 +412,13 @@ fn pace<P: Producer<Item = f32> + Observer>(
             continue;
         }
 
-        while producer.occupied_len() < RING_TARGET && producer.vacant_len() >= FRAME_SAMPLES * 2 {
+        // Zapas skrojony pod rzeczywistą porcję, o jaką woła ujście. Połowa
+        // pierścienia to twardy sufit, żeby przy absurdalnym kwancie nie
+        // próbować trzymać więcej, niż się mieści.
+        let ring_target = (request.load(Ordering::Relaxed) as usize * RING_HEADROOM)
+            .clamp(RING_MIN, RING_SAMPLES / 2);
+
+        while producer.occupied_len() < ring_target && producer.vacant_len() >= FRAME_SAMPLES * 2 {
             let popped = {
                 let Ok(mut jb) = jitter.lock() else { break };
                 jb.pop()
@@ -412,7 +447,19 @@ fn pace<P: Producer<Item = f32> + Observer>(
             producer.push_slice(&resampled);
         }
 
-        ring_samples.store(producer.occupied_len() as u64, Ordering::Relaxed);
+        let occupied = producer.occupied_len();
+        ring_samples.store(occupied as u64, Ordering::Relaxed);
+
+        if !primed && occupied >= ring_target {
+            primed = true;
+            if let Ok(mut jb) = jitter.lock() {
+                let dropped = jb.trim_to_target();
+                if dropped > 0 {
+                    tracing::debug!(dropped, "przycięto poduszkę po napełnieniu potoku");
+                }
+            }
+            drift.reset();
+        }
 
         // Regulacja co 20 ms; szybciej nie ma sensu przy stałej czasowej 2 s.
         let dt = last_tick.elapsed();

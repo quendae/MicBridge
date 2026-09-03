@@ -166,6 +166,30 @@ impl JitterBuffer {
         }
     }
 
+    /// Zrzuca nadmiar ponad cel, przeskakując do najświeższych ramek.
+    ///
+    /// Do wywołania raz, gdy potok jest już napełniony. Pierścień przed kartą
+    /// trzyma wtedy ciągły dźwięk, więc przeskok w strumieniu jest sklejką,
+    /// a nie dziurą — inaczej niż w środku sesji, gdzie by trzasnęło.
+    ///
+    /// Prefill przycina poduszkę wcześniej, ale między nim a napełnieniem
+    /// pierścienia zdąży napłynąć tyle pakietów, ile trwa rozruch karty; bez
+    /// tego drugiego przycięcia regulator dryfu ściągałby ten nadmiar
+    /// kilkadziesiąt sekund.
+    pub fn trim_to_target(&mut self) -> usize {
+        let mut dropped = 0;
+        while self.slots.len() > self.target_frames {
+            let oldest = *self.slots.keys().next().expect("len > target >= 1");
+            self.slots.remove(&oldest);
+            self.trimmed += 1;
+            dropped += 1;
+        }
+        if let Some(&first) = self.slots.keys().next() {
+            self.next_out = Some(first);
+        }
+        dropped
+    }
+
     /// Holes as a percentage of frames that should have played. Frames rebuilt
     /// by FEC count too — they were lost on the wire, the listener just did not
     /// hear it, and the encoder still needs to know.
@@ -349,6 +373,40 @@ mod tests {
         assert_eq!(jb.trimmed, 7);
         assert_eq!(jb.depth(), 2);
         assert_eq!(jb.lost, 0, "przycięcie to nie strata");
+    }
+
+    #[test]
+    fn trimming_after_priming_skips_ahead_without_counting_losses() {
+        let mut jb = JitterBuffer::new(3, 40);
+        for i in 0..4 {
+            jb.push(i, pkt(i as u8));
+        }
+        assert_eq!(jb.pop(), Pop::Packet(pkt(1)), "prefill przycina do celu");
+
+        // Rozruch karty: zanim potok się napełnił, dopłynęło jeszcze dziesięć.
+        for i in 4..14 {
+            jb.push(i, pkt(i as u8));
+        }
+        assert_eq!(jb.trim_to_target(), 9);
+        assert_eq!(jb.depth(), 3);
+        assert_eq!(
+            jb.pop(),
+            Pop::Packet(pkt(11)),
+            "gramy najświeższe, nie stare"
+        );
+        assert_eq!(jb.lost, 0, "przeskok to nie strata");
+    }
+
+    #[test]
+    fn trimming_a_buffer_at_target_does_nothing() {
+        let mut jb = JitterBuffer::new(3, 40);
+        for i in 0..3 {
+            jb.push(i, pkt(i as u8));
+        }
+        jb.pop();
+        let before = jb.depth();
+        assert_eq!(jb.trim_to_target(), 0);
+        assert_eq!(jb.depth(), before);
     }
 
     #[test]
