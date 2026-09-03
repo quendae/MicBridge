@@ -1,14 +1,15 @@
 //! MicBridge — przenosi mikrofon z jednego komputera na drugi.
 //!
-//! Etap M4: do silnika z M2 i wirtualnego wejścia z M3 dochodzi wykrywanie
-//! w sieci — adresu nie trzeba już znać. Parowanie i okno są w toku.
+//! Wersja dla terminala. Sesje żyją w `mb_app`; tutaj zostaje wiersz poleceń,
+//! wypisywanie list i przechwycenie Ctrl-C. To samo `mb_app` napędza okno.
 
-mod pair;
-mod recv;
-mod send;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use mb_app::ui::{Console, FixedCode};
+use mb_app::{recv, send};
 use mb_audio::Direction;
 use mb_proto::{CONTROL_PORT, PROTOCOL_VERSION, SAMPLE_RATE};
 
@@ -120,12 +121,15 @@ fn main() -> Result<()> {
             drop_pct,
             code,
         } => send::run(
-            to.as_deref(),
-            &device,
-            gain_db,
-            bitrate,
-            drop_pct,
-            code.as_deref(),
+            &send::Options {
+                to,
+                device,
+                gain_db,
+                bitrate,
+                drop_pct,
+            },
+            &*reporter(code),
+            stop_on_ctrl_c()?,
         ),
         Command::Recv {
             listen,
@@ -133,8 +137,41 @@ fn main() -> Result<()> {
             buffer_ms,
             fixed_buffer,
             no_announce,
-        } => recv::run(&listen, &sink, buffer_ms, !fixed_buffer, !no_announce),
+        } => recv::run(
+            &recv::Options {
+                listen,
+                sink,
+                buffer_ms,
+                adaptive: !fixed_buffer,
+                announce: !no_announce,
+            },
+            &Console,
+            stop_on_ctrl_c()?,
+        ),
     }
+}
+
+/// Kod parowania z wiersza poleceń zdejmuje pytanie z klawiatury — inaczej
+/// wpisuje go człowiek.
+fn reporter(code: Option<String>) -> Box<dyn mb_app::Reporter> {
+    match code {
+        Some(code) => Box::new(FixedCode {
+            inner: Console,
+            code,
+        }),
+        None => Box::new(Console),
+    }
+}
+
+/// Flaga, którą Ctrl-C opuszcza. Sesje same nie dotykają sygnałów, bo w oknie
+/// zatrzymuje je przycisk.
+fn stop_on_ctrl_c() -> Result<Arc<AtomicBool>> {
+    let running = Arc::new(AtomicBool::new(true));
+    let flag = Arc::clone(&running);
+    ctrlc::set_handler(move || flag.store(false, Ordering::Relaxed))
+        .context("nie mogę przechwycić Ctrl-C")?;
+    println!("Ctrl-C kończy.");
+    Ok(running)
 }
 
 fn init_tracing(verbose: u8) {

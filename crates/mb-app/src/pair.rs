@@ -8,11 +8,12 @@
 //! czy zna odbiornik i — z odpowiedzi odbiornika — czy odbiornik zna jego.
 //! Wystarczy, że jedna strona straci klucz, i parujemy się od nowa.
 
-use std::io::{BufRead, Read, Write};
+use std::io::{Read, Write};
 use std::sync::Mutex;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 
+use crate::ui::Reporter;
 use mb_net::{KeyStore, SecureChannel};
 use mb_proto::{read_frame, write_frame, ControlMsg, Init, PROTOCOL_VERSION};
 
@@ -24,6 +25,12 @@ use mb_proto::{read_frame, write_frame, ControlMsg, Init, PROTOCOL_VERSION};
 pub struct Pairing {
     code: String,
     failures: u32,
+}
+
+impl Default for Pairing {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Pairing {
@@ -38,13 +45,15 @@ impl Pairing {
         self.code.clone()
     }
 
-    fn note_failure(&mut self) {
+    /// Zwraca true, gdy kod przepadł i jest nowy.
+    fn note_failure(&mut self) -> bool {
         self.failures += 1;
-        if self.failures >= mb_net::pair::MAX_ATTEMPTS {
-            self.code = mb_net::pair::fresh_code();
-            self.failures = 0;
-            println!("  trzy nieudane próby — losuję nowy kod.");
+        if self.failures < mb_net::pair::MAX_ATTEMPTS {
+            return false;
         }
+        self.code = mb_net::pair::fresh_code();
+        self.failures = 0;
+        true
     }
 
     fn note_success(&mut self) {
@@ -54,7 +63,7 @@ impl Pairing {
 
 /// Strona nadająca: przedstawia się, w razie potrzeby paruje i zestawia
 /// szyfrowany kanał.
-pub fn establish<S: Read + Write>(stream: &mut S, code: Option<&str>) -> Result<SecureChannel> {
+pub fn establish<S: Read + Write>(stream: &mut S, ui: &dyn Reporter) -> Result<SecureChannel> {
     ControlMsg::Init(Init {
         version: PROTOCOL_VERSION,
         host: mb_net::hostname(),
@@ -75,13 +84,12 @@ pub fn establish<S: Read + Write>(stream: &mut S, code: Option<&str>) -> Result<
     let key = match stored {
         Some(key) if !needed => key,
         _ => {
-            let code = match code {
-                Some(c) => mb_net::pair::normalize_code(c),
-                None => ask_for_code(&peer)?,
-            };
+            let code = ui.ask_code(&peer)?;
             let key = mb_net::pair::initiator(stream, &code)?;
             store.set(&peer, &key)?;
-            println!("Sparowano z „{peer}”. Następnym razem pójdzie bez kodu.");
+            ui.line(&format!(
+                "Sparowano z „{peer}”. Następnym razem pójdzie bez kodu."
+            ));
             key
         }
     };
@@ -95,6 +103,7 @@ pub fn establish<S: Read + Write>(stream: &mut S, code: Option<&str>) -> Result<
 pub fn accept<S: Read + Write>(
     stream: &mut S,
     pairing: &Mutex<Pairing>,
+    ui: &dyn Reporter,
 ) -> Result<(SecureChannel, String)> {
     let init = match ControlMsg::read_from(stream)? {
         ControlMsg::Init(i) => i,
@@ -132,9 +141,7 @@ pub fn accept<S: Read + Write>(
             };
             p.code()
         };
-        println!("\n„{}” prosi o sparowanie.", init.host);
-        println!("  KOD: {}", mb_net::pair::format_code(&code));
-        println!("  Przepisz go na drugiej maszynie.");
+        ui.show_code(&init.host, &code);
 
         match mb_net::pair::responder(stream, &code) {
             Ok(key) => {
@@ -142,12 +149,16 @@ pub fn accept<S: Read + Write>(
                     p.note_success();
                 }
                 store.set(&init.host, &key)?;
-                println!("  Sparowano z „{}”.", init.host);
+                ui.line(&format!("  Sparowano z „{}”.", init.host));
                 key
             }
             Err(e) => {
-                if let Ok(mut p) = pairing.lock() {
-                    p.note_failure();
+                let fresh = match pairing.lock() {
+                    Ok(mut p) => p.note_failure(),
+                    Err(_) => false,
+                };
+                if fresh {
+                    ui.line("  trzy nieudane próby — losuję nowy kod.");
                 }
                 let _ = ControlMsg::Reject {
                     reason: "parowanie odrzucone".into(),
@@ -204,27 +215,4 @@ pub fn recv_secure<R: Read>(stream: &mut R, channel: &Mutex<SecureChannel>) -> R
         bail!("kanał sterujący niedostępny")
     };
     ch.open(&body)
-}
-
-fn ask_for_code(peer: &str) -> Result<String> {
-    println!("\n„{peer}” nie jest jeszcze sparowany.");
-    println!("Na jego ekranie pojawił się sześciocyfrowy kod.");
-    print!("Przepisz go tutaj: ");
-    std::io::stdout().flush().ok();
-
-    let mut line = String::new();
-    std::io::stdin()
-        .lock()
-        .read_line(&mut line)
-        .context("nie mogę odczytać kodu")?;
-
-    let code = mb_net::pair::normalize_code(&line);
-    if code.len() != mb_net::pair::CODE_DIGITS {
-        bail!(
-            "kod ma {} cyfr, oczekuję {}",
-            code.len(),
-            mb_net::pair::CODE_DIGITS
-        );
-    }
-    Ok(code)
 }
