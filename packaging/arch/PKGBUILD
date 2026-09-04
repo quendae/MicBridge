@@ -11,7 +11,8 @@ license=('MIT' 'Apache-2.0')
 # w tacce, libxkbcommon dla okna.
 depends=('alsa-lib' 'pipewire' 'gtk3' 'libayatana-appindicator' 'libxkbcommon')
 # clang generuje wiazania pipewire-rs w czasie budowania, cmake sklada libopus.
-makedepends=('rust' 'cargo' 'cmake' 'clang')
+# cargo nie jest w Archu osobnym pakietem - siedzi w rust.
+makedepends=('rust' 'cmake' 'clang')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 

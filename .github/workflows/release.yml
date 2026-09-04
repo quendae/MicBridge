@@ -72,7 +72,7 @@ jobs:
       - name: Czy zależności istnieją
         run: |
           pacman -Si alsa-lib pipewire gtk3 libayatana-appindicator libxkbcommon > /dev/null
-          pacman -Si rust cargo cmake clang > /dev/null
+          pacman -Si rust cmake clang > /dev/null
           echo "wszystkie nazwy pakietów odnalezione"
 
       - name: Poprawność PKGBUILD
