@@ -54,11 +54,13 @@ potrzebny.
 ### Język
 
 Program mówi po polsku, angielsku, niemiecku, hiszpańsku, francusku, włosku
-i ukraińsku. Wybiera sam, na podstawie ustawień systemu — nie ma osobnego
-przełącznika, bo kto ustawił sobie system po niemiecku, chce niemieckiego
-wszędzie. Nieznany język dostaje angielski.
+i ukraińsku. Wybiera sam, na podstawie ustawień systemu; nieznany język dostaje
+angielski. Gdy automat nie trafi — system po angielsku u kogoś, kto woli
+polski — wybór zmienia lista na dole okna. Zapamiętuje się obok kluczy
+parowania i działa od razu, bez restartu; jedyne, co się nie przestawia
+w locie, to dwa słowa w menu ikony w zasobniku.
 
-Do sprawdzenia albo na przekór:
+Do sprawdzenia albo na przekór (przykrywa też zapisany wybór):
 
 ```bash
 MICBRIDGE_LANG=de micbridge doctor

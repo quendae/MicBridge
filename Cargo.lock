@@ -2270,6 +2270,7 @@ dependencies = [
 name = "mb-i18n"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "windows-sys 0.61.2",
 ]
 

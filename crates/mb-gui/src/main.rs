@@ -70,7 +70,9 @@ struct App {
     /// Wpisywany kod parowania.
     code: String,
     autostart: bool,
-    autostart_error: Option<String>,
+    /// Ostatnie niepowodzenie z paska na dole — autostart albo zapis języka.
+    /// Jedno miejsce wystarczy: naraz i tak wychodzi najwyżej jedno.
+    footer_error: Option<String>,
 
     sinks: Vec<String>,
     mics: Vec<String>,
@@ -124,7 +126,7 @@ impl App {
             target: Target::Auto,
             code: String::new(),
             autostart: autostart::enabled(),
-            autostart_error: None,
+            footer_error: None,
             sinks: Vec::new(),
             mics: Vec::new(),
             peers: Vec::new(),

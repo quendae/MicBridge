@@ -11,6 +11,9 @@ name = "mb_i18n"
 path = "src/lib.rs"
 
 [dependencies]
+# Po katalog konfiguracyjny — tam, gdzie klucze parowania, ląduje też
+# zapamiętany wybór języka.
+dirs = "6"
 
 # Po znacznik języka ustawiony w systemie. W Linuksie i macOS wystarczą
 # zmienne środowiskowe, więc żadnej biblioteki tam nie potrzeba.

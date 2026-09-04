@@ -219,7 +219,7 @@ impl App {
     pub(crate) fn footer_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             if ui.checkbox(&mut self.autostart, t(K::Autostart)).changed() {
-                self.autostart_error = match autostart::set(self.autostart) {
+                self.footer_error = match autostart::set(self.autostart) {
                     Ok(()) => None,
                     Err(e) => {
                         // Przełącznik ma pokazywać stan faktyczny, nie życzenie.
@@ -228,6 +228,9 @@ impl App {
                     }
                 };
             }
+
+            ui.add_space(12.0);
+            self.language_ui(ui);
 
             if !self.paired.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -240,8 +243,38 @@ impl App {
             }
         });
 
-        if let Some(e) = &self.autostart_error {
+        if let Some(e) = &self.footer_error {
             ui.colored_label(LOSS, e);
+        }
+    }
+
+    /// Wybór języka.
+    ///
+    /// Program dobiera go sam z ustawień systemu i zwykle trafia. Lista jest
+    /// na te razy, kiedy nie trafi: system po angielsku u kogoś, kto woli
+    /// polski, albo pulpit, który nie mówi programom prawdy. Wybór zostaje
+    /// zapamiętany i działa od następnej klatki — całe okno czyta teksty przy
+    /// każdym rysowaniu.
+    fn language_ui(&mut self, ui: &mut egui::Ui) {
+        ui.label(t(K::LanguageLabel));
+        let current = mb_i18n::picked();
+        let mut wanted = current;
+        egui::ComboBox::from_id_salt("jezyk")
+            .selected_text(match current {
+                Some(lang) => lang.endonym(),
+                None => t(K::LangAutomatic),
+            })
+            .width(130.0)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut wanted, None, t(K::LangAutomatic));
+                ui.separator();
+                for lang in mb_i18n::LANGS {
+                    ui.selectable_value(&mut wanted, Some(lang), lang.endonym());
+                }
+            });
+
+        if wanted != current {
+            self.footer_error = mb_i18n::choose(wanted).err().map(|e| format!("{e}"));
         }
     }
 }
