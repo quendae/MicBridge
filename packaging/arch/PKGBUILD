@@ -14,7 +14,10 @@ depends=('alsa-lib' 'pipewire' 'gtk3' 'libayatana-appindicator' 'libxkbcommon')
 # cargo nie jest w Archu osobnym pakietem - siedzi w rust.
 makedepends=('rust' 'cmake' 'clang')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+# Suma archiwum z wydania. AUR odradza SKIP wszedzie poza zrodlami z systemu
+# kontroli wersji: bez niej makepkg zbuduje wszystko, co akurat przyjdzie spod
+# tego adresu.
+sha256sums=('3f39915a71603c922bf818533864eb4e98339094aac9feb24a9815da0e2c98b6')
 
 prepare() {
 	cd "MicBridge-$pkgver"
