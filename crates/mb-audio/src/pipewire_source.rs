@@ -70,13 +70,7 @@ impl VirtualSource {
                     rate,
                 })
             }
-            Ok(Err(e)) => Err(anyhow!(
-                "nie mogę utworzyć wirtualnego mikrofonu w PipeWire: {e}.\n\
-                 Sprawdź, czy PipeWire działa: \
-                 `systemctl --user status pipewire wireplumber`.\n\
-                 Na czystym PulseAudio ta ścieżka nie zadziała — wskaż ujście \
-                 ręcznie przez --sink."
-            )),
+            Ok(Err(e)) => Err(anyhow!("{}", mb_i18n::t1(mb_i18n::Key::ErrNoVirtualMic, e))),
             // Wątek zakończył się bez słowa: kanał zamknięty przed potwierdzeniem.
             Err(_) => Err(anyhow!(
                 "wątek PipeWire zakończył się, zanim strumień się połączył"

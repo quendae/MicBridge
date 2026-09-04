@@ -268,4 +268,19 @@ CliSinkWindowsNote: "        Windows nie pozwala programowi utworzyć własnego 
 CliNoMic: "Bez mikrofonu: --device {} nadaje sinus 440 Hz — sprawdza całą ścieżkę.", "Without a microphone: --device {} sends a 440 Hz sine — it exercises the whole path.", "Ohne Mikrofon: --device {} sendet einen 440-Hz-Sinus — prüft den ganzen Weg.", "Sin micrófono: --device {} envía un seno de 440 Hz y comprueba todo el recorrido.", "Sans microphone : --device {} émet un sinus 440 Hz — teste tout le trajet.", "Senza microfono: --device {} invia un seno a 440 Hz e verifica l’intero percorso.", "Без мікрофона: --device {} передає синус 440 Гц — перевіряє весь шлях.";
 LanguageLabel: "Język:", "Language:", "Sprache:", "Idioma:", "Langue :", "Lingua:", "Мова:";
 LangAutomatic: "automatycznie", "automatic", "automatisch", "automático", "automatique", "automatico", "автоматично";
+ErrNoVirtualMic: "nie mogę utworzyć wirtualnego mikrofonu w PipeWire: {}.
+Sprawdź, czy PipeWire działa: `systemctl --user status pipewire wireplumber`.
+Na czystym PulseAudio ta ścieżka nie zadziała — wskaż ujście ręcznie przez --sink.", "cannot create the virtual microphone in PipeWire: {}.
+Check that PipeWire is running: `systemctl --user status pipewire wireplumber`.
+On plain PulseAudio this path will not work — point at a sink by hand with --sink.", "kann das virtuelle Mikrofon in PipeWire nicht anlegen: {}.
+Prüfe, ob PipeWire läuft: `systemctl --user status pipewire wireplumber`.
+Bei reinem PulseAudio funktioniert dieser Weg nicht — gib die Senke mit --sink von Hand an.", "no puedo crear el micrófono virtual en PipeWire: {}.
+Comprueba que PipeWire esté en marcha: `systemctl --user status pipewire wireplumber`.
+Con PulseAudio puro esta vía no funciona: indica el sumidero a mano con --sink.", "impossible de créer le microphone virtuel dans PipeWire : {}.
+Vérifiez que PipeWire tourne : `systemctl --user status pipewire wireplumber`.
+Sur PulseAudio pur, cette voie ne fonctionne pas — indiquez le puits à la main avec --sink.", "non riesco a creare il microfono virtuale in PipeWire: {}.
+Controlla che PipeWire sia attivo: `systemctl --user status pipewire wireplumber`.
+Con PulseAudio puro questa strada non funziona: indica la destinazione a mano con --sink.", "не можу створити віртуальний мікрофон у PipeWire: {}.
+Перевірте, чи працює PipeWire: `systemctl --user status pipewire wireplumber`.
+На чистому PulseAudio цей шлях не спрацює — вкажіть стік вручну через --sink.";
 }
