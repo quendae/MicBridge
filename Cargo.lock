@@ -2207,7 +2207,7 @@ dependencies = [
 
 [[package]]
 name = "mb-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2225,7 +2225,7 @@ dependencies = [
 
 [[package]]
 name = "mb-audio"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "cpal",
@@ -2237,7 +2237,7 @@ dependencies = [
 
 [[package]]
 name = "mb-engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "mb-proto",
@@ -2248,7 +2248,7 @@ dependencies = [
 
 [[package]]
 name = "mb-gui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "eframe",
@@ -2268,7 +2268,7 @@ dependencies = [
 
 [[package]]
 name = "mb-i18n"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dirs",
  "windows-sys 0.61.2",
@@ -2276,7 +2276,7 @@ dependencies = [
 
 [[package]]
 name = "mb-net"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chacha20poly1305",
@@ -2298,7 +2298,7 @@ dependencies = [
 
 [[package]]
 name = "mb-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ciborium",
  "serde",

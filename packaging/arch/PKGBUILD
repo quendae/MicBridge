@@ -1,6 +1,6 @@
 # Maintainer: quendae <qnd.000@gmail.com>
 pkgname=micbridge
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Przenosi mikrofon z jednego komputera na drugi po sieci lokalnej"
 arch=('x86_64')
@@ -14,10 +14,10 @@ depends=('alsa-lib' 'pipewire' 'gtk3' 'libayatana-appindicator' 'libxkbcommon')
 # cargo nie jest w Archu osobnym pakietem - siedzi w rust.
 makedepends=('rust' 'cmake' 'clang')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-# Suma archiwum z wydania. AUR odradza SKIP wszedzie poza zrodlami z systemu
-# kontroli wersji: bez niej makepkg zbuduje wszystko, co akurat przyjdzie spod
-# tego adresu.
-sha256sums=('3f39915a71603c922bf818533864eb4e98339094aac9feb24a9815da0e2c98b6')
+# Suma archiwum z wydania — dopisywana zaraz po otagowaniu, bo wcześniej nie
+# ma czego liczyc. AUR odradza SKIP wszedzie poza zrodlami z systemu kontroli
+# wersji: bez sumy makepkg zbuduje wszystko, co akurat przyjdzie spod adresu.
+sha256sums=('SKIP')
 
 prepare() {
 	cd "MicBridge-$pkgver"
