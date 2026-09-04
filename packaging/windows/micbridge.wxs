@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="windows-1252"?>
+<!--
+  Instalator MSI.
+
+  Instaluje oba programy — okno i wiersz poleceń — bo użytkownik nie ma powodu
+  wiedzieć, że to dwa pliki. Katalog trafia do PATH, żeby `micbridge` działało
+  z dowolnego terminala.
+
+  VB-CABLE sprawdzamy, ale nie blokujemy nim instalacji: jest potrzebny tylko
+  wtedy, gdy ten komputer ma ODBIERAĆ cudzy mikrofon. Do wysyłania własnego nie
+  jest do niczego potrzebny, a zatrzymywanie instalacji z tego powodu byłoby
+  odmową zrobienia rzeczy, o którą użytkownik prosi.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+
+    <Product Id="*"
+             Name="MicBridge"
+             UpgradeCode="8B0D5A6E-3F42-4C7B-9A15-2E6D4C8F1B90"
+             Manufacturer="quendae"
+             Language="1045"
+             Codepage="1250"
+             Version="$(var.Version)">
+
+        <Package Id="*"
+                 Keywords="Installer"
+                 Description="MicBridge — mikrofon z drugiego komputera"
+                 Manufacturer="quendae"
+                 InstallerVersion="450"
+                 Languages="1045"
+                 Compressed="yes"
+                 InstallScope="perMachine"
+                 SummaryCodepage="1250" />
+
+        <MajorUpgrade
+            Schedule="afterInstallInitialize"
+            DowngradeErrorMessage="Zainstalowana jest już nowsza wersja MicBridge." />
+
+        <MediaTemplate EmbedCab="yes" />
+
+        <!--
+          Czy w systemie jest wirtualny kabel.
+
+          Szukamy w trzech miejscach, bo nazwa usługi zmieniała się między
+          wydaniami VB-CABLE, a klucz odinstalowania ma stałą nazwę. To i tak
+          jest tylko przesłanka: rozstrzyga `micbridge doctor`, który pyta
+          o listę urządzeń dźwiękowych, czyli o dokładnie to, z czego program
+          potem skorzysta.
+        -->
+        <Property Id="VBCABLEMME">
+            <RegistrySearch Id="SzukajVBCableMME" Root="HKLM"
+                            Key="SYSTEM\CurrentControlSet\Services\VBAudioVACMME"
+                            Name="DisplayName" Type="raw" />
+        </Property>
+        <Property Id="VBCABLEWDM">
+            <RegistrySearch Id="SzukajVBCableWDM" Root="HKLM"
+                            Key="SYSTEM\CurrentControlSet\Services\VBAudioVACWDM"
+                            Name="DisplayName" Type="raw" />
+        </Property>
+        <Property Id="VBCABLEUNINST">
+            <RegistrySearch Id="SzukajVBCableUninst" Root="HKLM"
+                            Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\VB:VBCABLE {87459874-1236-4469}"
+                            Name="DisplayName" Type="raw" />
+        </Property>
+
+        <Feature Id="Glowna" Title="MicBridge" Level="1">
+            <ComponentGroupRef Id="Programy" />
+            <ComponentRef Id="SkrotMenuStart" />
+        </Feature>
+
+        <Directory Id="TARGETDIR" Name="SourceDir">
+            <Directory Id="ProgramFiles64Folder">
+                <Directory Id="INSTALLDIR" Name="MicBridge" />
+            </Directory>
+            <Directory Id="ProgramMenuFolder">
+                <Directory Id="KatalogMenu" Name="MicBridge" />
+            </Directory>
+        </Directory>
+
+        <DirectoryRef Id="INSTALLDIR">
+            <Component Id="Okno" Guid="*">
+                <File Id="MicBridgeGui" Source="$(var.TargetDir)\micbridge-gui.exe"
+                      KeyPath="yes" />
+            </Component>
+            <Component Id="WierszPolecen" Guid="*">
+                <File Id="MicBridgeCli" Source="$(var.TargetDir)\micbridge.exe"
+                      KeyPath="yes" />
+                <!-- Żeby `micbridge doctor` działało z każdego terminala. -->
+                <Environment Id="DodajDoPath" Name="PATH" Value="[INSTALLDIR]"
+                             Permanent="no" Part="last" Action="set" System="yes" />
+            </Component>
+            <Component Id="Ikona" Guid="*">
+                <File Id="IkonaProgramu" Source="$(var.IconDir)\micbridge.ico"
+                      KeyPath="yes" />
+            </Component>
+            <Component Id="Dokumentacja" Guid="*">
+                <File Id="Readme" Source="$(var.DocDir)\README.md" KeyPath="yes" />
+            </Component>
+        </DirectoryRef>
+
+        <ComponentGroup Id="Programy">
+            <ComponentRef Id="Okno" />
+            <ComponentRef Id="WierszPolecen" />
+            <ComponentRef Id="Ikona" />
+            <ComponentRef Id="Dokumentacja" />
+        </ComponentGroup>
+
+        <DirectoryRef Id="KatalogMenu">
+            <Component Id="SkrotMenuStart" Guid="*">
+                <Shortcut Id="SkrotOkno"
+                          Name="MicBridge"
+                          Description="Mikrofon z drugiego komputera"
+                          Target="[INSTALLDIR]micbridge-gui.exe"
+                          WorkingDirectory="INSTALLDIR"
+                          Icon="MicBridgeIkona" />
+                <RemoveFolder Id="UsunKatalogMenu" On="uninstall" />
+                <RegistryValue Root="HKCU" Key="Software\quendae\MicBridge"
+                               Name="skrot" Type="integer" Value="1" KeyPath="yes" />
+            </Component>
+        </DirectoryRef>
+
+        <Icon Id="MicBridgeIkona" SourceFile="$(var.IconDir)\micbridge.ico" />
+        <Property Id="ARPPRODUCTICON" Value="MicBridgeIkona" />
+        <Property Id="ARPHELPLINK" Value="https://github.com/quendae/MicBridge" />
+        <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
+
+        <!--
+          Ostatnie okno instalatora mówi to, czego nie widać z samej instalacji:
+          czego jeszcze brakuje i do czego. Treść zależy od tego, co znaleźliśmy.
+        -->
+        <SetProperty Id="WIXUI_EXITDIALOGOPTIONALTEXT"
+                     After="CostFinalize"
+                     Sequence="ui"
+                     Value="Gotowe. Ten komputer może wysyłać swój mikrofon na inne maszyny.&#13;&#10;&#13;&#10;Nie wykryto VB-CABLE. Jest potrzebny tylko wtedy, gdy MicBridge ma tutaj ODBIERAĆ cudzy mikrofon i pokazać go aplikacjom jako urządzenie wejściowe — Windows nie pozwala programowi utworzyć mikrofonu bez podpisanego sterownika. Pobierz go z https://vb-audio.com/Cable/ i ustaw w nim Max Latency na 2048.&#13;&#10;&#13;&#10;Sprawdzenie w dowolnej chwili: micbridge doctor">
+            NOT VBCABLEMME AND NOT VBCABLEWDM AND NOT VBCABLEUNINST
+        </SetProperty>
+        <SetProperty Id="WIXUI_EXITDIALOGOPTIONALTEXT"
+                     After="CostFinalize"
+                     Sequence="ui"
+                     Value="Gotowe. VB-CABLE jest już w systemie, więc ten komputer może i wysyłać, i odbierać.&#13;&#10;&#13;&#10;Sprawdzenie konfiguracji: micbridge doctor">
+            VBCABLEMME OR VBCABLEWDM OR VBCABLEUNINST
+        </SetProperty>
+
+        <UIRef Id="WixUI_InstallDir" />
+        <UIRef Id="WixUI_ErrorProgressText" />
+
+        <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+    </Product>
+</Wix>

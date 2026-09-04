@@ -1,0 +1,170 @@
+name: Paczki
+
+# Tag `v0.1.0` buduje paczki i dokleja je do wydania. Bez taga można ten sam
+# przepis uruchomić ręcznie — wtedy paczki zostają jako artefakty przebiegu,
+# co pozwala sprawdzić, czy w ogóle się składają, nie ogłaszając wydania.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: deb i rpm
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Zależności systemowe
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libasound2-dev libpipewire-0.3-dev libclang-dev pkg-config libgtk-3-dev libayatana-appindicator3-dev libxkbcommon-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Narzędzia do pakowania
+        run: cargo install cargo-deb cargo-generate-rpm --locked
+
+      - name: Budowanie
+        run: cargo build --workspace --release
+
+      # cargo-deb domyślnie przebudowałby projekt po swojemu; --no-build każe
+      # mu wziąć to, co już stoi w target/release.
+      - name: Paczka deb
+        run: cargo deb -p mb-gui --no-build --output dist/
+
+      - name: Paczka rpm
+        run: cargo generate-rpm -p crates/mb-gui --output dist/
+
+      - name: Co powstało
+        run: |
+          ls -la dist/
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+
+  # PKGBUILD nie buduje się w tym przebiegu na gotowym wydaniu, bo źródła
+  # ściąga z taga, którego przy uruchomieniu ręcznym jeszcze nie ma. Sprawdzamy
+  # to, co da się sprawdzić bez sieci: czy plik jest poprawny i czy nazwy
+  # zależności naprawdę istnieją w repozytoriach.
+  arch:
+    name: PKGBUILD
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+
+    steps:
+      - name: Zależności systemowe
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed base-devel pacman-contrib namcap git
+
+      - uses: actions/checkout@v5
+
+      - name: Czy zależności istnieją
+        run: |
+          pacman -Si alsa-lib pipewire gtk3 libayatana-appindicator libxkbcommon > /dev/null
+          pacman -Si rust cargo cmake clang > /dev/null
+          echo "wszystkie nazwy pakietów odnalezione"
+
+      - name: Poprawność PKGBUILD
+        working-directory: packaging/arch
+        run: |
+          # makepkg odmawia pracy jako root, więc robimy to na zwykłym koncie.
+          useradd -m budowniczy
+          chown -R budowniczy .
+          su budowniczy -c "makepkg --printsrcinfo" | tee .SRCINFO
+          namcap PKGBUILD || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: srcinfo
+          path: packaging/arch/.SRCINFO
+
+  windows:
+    name: MSI
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Budowanie
+        run: cargo build --workspace --release
+
+      # Bierzemy binaria WiX 3 wprost z wydania, zamiast liczyć na to, co
+      # akurat jest w obrazie maszyny: obrazy się zmieniają, a składnia WiX 4
+      # jest inna i ten plik by się na niej nie skompilował.
+      - name: WiX 3
+        shell: pwsh
+        run: |
+          $url = "https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip"
+          Invoke-WebRequest -Uri $url -OutFile wix.zip
+          Expand-Archive wix.zip -DestinationPath wix
+          "$env:GITHUB_WORKSPACE\wix" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Numer wersji
+        id: wersja
+        shell: pwsh
+        run: |
+          # MSI nie przyjmuje nazw w rodzaju „v0.1.0” ani przyrostków.
+          $tag = "${{ github.ref_name }}"
+          $version = if ($tag -match '^v(\d+\.\d+\.\d+)') { $Matches[1] } else { "0.1.0" }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Output "wersja MSI: $version"
+
+      - name: Instalator
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          candle.exe -nologo `
+            -dVersion="${{ steps.wersja.outputs.version }}" `
+            -dTargetDir="$PWD\target\release" `
+            -dIconDir="$PWD\packaging\icons" `
+            -dDocDir="$PWD" `
+            -dLicenseRtf="$PWD\packaging\windows\license.rtf" `
+            -ext WixUIExtension -ext WixUtilExtension `
+            -out dist\micbridge.wixobj `
+            packaging\windows\micbridge.wxs
+          light.exe -nologo `
+            -ext WixUIExtension -ext WixUtilExtension `
+            -cultures:pl-pl `
+            -out "dist\MicBridge-${{ steps.wersja.outputs.version }}-x64.msi" `
+            dist\micbridge.wixobj
+
+      - name: Co powstało
+        shell: pwsh
+        run: Get-ChildItem dist | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.msi
+
+  wydanie:
+    name: Wydanie
+    needs: [linux, arch, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: paczki
+
+      - name: Doklej do wydania
+        uses: softprops/action-gh-release@v2
+        with:
+          files: paczki/**/*
+          generate_release_notes: true

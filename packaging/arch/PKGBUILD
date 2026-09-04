@@ -1,0 +1,54 @@
+# Maintainer: quendae <qnd.000@gmail.com>
+pkgname=micbridge
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Przenosi mikrofon z jednego komputera na drugi po sieci lokalnej"
+arch=('x86_64')
+url="https://github.com/quendae/MicBridge"
+license=('MIT' 'Apache-2.0')
+# alsa-lib jest potrzebne mimo PipeWire: cpal linkuje sie z nim niezaleznie od
+# tego, ktory serwer dzwieku dziala. gtk3 i wskaznik zasobnika sa dla ikony
+# w tacce, libxkbcommon dla okna.
+depends=('alsa-lib' 'pipewire' 'gtk3' 'libayatana-appindicator' 'libxkbcommon')
+# clang generuje wiazania pipewire-rs w czasie budowania, cmake sklada libopus.
+makedepends=('rust' 'cargo' 'cmake' 'clang')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+	cd "MicBridge-$pkgver"
+	cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+	cd "MicBridge-$pkgver"
+	export RUSTUP_TOOLCHAIN=stable
+	export CARGO_TARGET_DIR=target
+	cargo build --frozen --release --workspace
+}
+
+check() {
+	cd "MicBridge-$pkgver"
+	export RUSTUP_TOOLCHAIN=stable
+	# Nic tutaj nie otwiera karty dzwiekowej ani gniazda w sieci, wiec testy
+	# przechodza takze na maszynie budujacej bez dzwieku.
+	cargo test --frozen --release --workspace
+}
+
+package() {
+	cd "MicBridge-$pkgver"
+	install -Dm755 target/release/micbridge "$pkgdir/usr/bin/micbridge"
+	install -Dm755 target/release/micbridge-gui "$pkgdir/usr/bin/micbridge-gui"
+
+	install -Dm644 packaging/linux/micbridge.desktop \
+		"$pkgdir/usr/share/applications/micbridge.desktop"
+	install -Dm644 packaging/icons/micbridge.svg \
+		"$pkgdir/usr/share/icons/hicolor/scalable/apps/micbridge.svg"
+	install -Dm644 packaging/icons/micbridge.png \
+		"$pkgdir/usr/share/icons/hicolor/256x256/apps/micbridge.png"
+
+	install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+	install -Dm644 docs/ARCHITEKTURA.md "$pkgdir/usr/share/doc/$pkgname/ARCHITEKTURA.md"
+	install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+	install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+}

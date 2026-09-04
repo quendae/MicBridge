@@ -5,6 +5,7 @@
 //! Wszystko, co widać na ekranie, przechodzi przez [`ui::Reporter`], więc
 //! sesja nie wie i nie musi wiedzieć, która z nich patrzy.
 
+pub mod doctor;
 pub mod pair;
 pub mod recv;
 pub mod send;

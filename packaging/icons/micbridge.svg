@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <title>MicBridge</title>
+  <circle cx="15.5" cy="15.5" r="15" fill="#285a96"/>
+  <g fill="#f5f5fa">
+    <rect x="12" y="6.5" width="7" height="10" rx="3.5"/>
+    <rect x="14.5" y="17" width="2" height="5"/>
+    <rect x="10.5" y="21.5" width="10" height="2" rx="1"/>
+  </g>
+</svg>

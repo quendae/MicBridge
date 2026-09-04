@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+# Krótki opis trafia do nagłówka paczek deb i rpm, więc musi zmieścić
+# się w jednej linijce.
+description = "Mikrofon z jednego komputera na drugim po sieci lokalnej"
 
 [[bin]]
 name = "micbridge-gui"
@@ -35,3 +39,57 @@ tray-icon = { version = "0.24", default-features = false }
 # tray-icon nie kompiluje się w ogóle.
 tray-icon = { version = "0.24", default-features = false, features = ["gtk"] }
 gtk = "0.18"
+
+# --- pakiety ---------------------------------------------------------------
+#
+# Paczki powstają z tego pakietu, bo to on daje okno; wiersz poleceń jedzie
+# w środku jako drugi plik. Obie strony trzeba mieć razem — użytkownik nie ma
+# powodu wiedzieć, że to dwa programy.
+#
+# Uwaga na ścieżki: cargo-deb liczy je względem tego Cargo.toml (stąd `../..`),
+# ale przedrostek `target/release` podmienia sam na prawdziwy katalog wyjściowy.
+# cargo-generate-rpm liczy je względem katalogu, z którego się je uruchamia,
+# czyli od korzenia drzewa. Stąd dwa różne zapisy tej samej listy.
+
+[package.metadata.deb]
+name = "micbridge"
+maintainer = "quendae <qnd.000@gmail.com>"
+copyright = "2026 quendae"
+license-file = ["../../LICENSE-MIT", "0"]
+section = "sound"
+priority = "optional"
+extended-description = """\
+Przenosi mikrofon z jednego komputera na drugi po sieci lokalnej. \
+Na maszynie docelowej pojawia sie jako zwykle urzadzenie wejsciowe, \
+wiec Discord, OBS czy gra widza go jak kazdy inny mikrofon. \
+Opus z korekcja bledow, bufor dopasowujacy sie do lacza, wykrywanie \
+przez mDNS i szyfrowana sesja po jednorazowym sparowaniu."""
+depends = "$auto"
+assets = [
+    ["target/release/micbridge", "usr/bin/", "755"],
+    ["target/release/micbridge-gui", "usr/bin/", "755"],
+    ["../../packaging/linux/micbridge.desktop", "usr/share/applications/", "644"],
+    ["../../packaging/icons/micbridge.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["../../packaging/icons/micbridge.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["../../README.md", "usr/share/doc/micbridge/README.md", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "micbridge"
+summary = "Mikrofon z jednego komputera na drugim"
+license = "MIT OR Apache-2.0"
+assets = [
+    { source = "target/release/micbridge", dest = "/usr/bin/micbridge", mode = "755" },
+    { source = "target/release/micbridge-gui", dest = "/usr/bin/micbridge-gui", mode = "755" },
+    { source = "packaging/linux/micbridge.desktop", dest = "/usr/share/applications/micbridge.desktop", mode = "644" },
+    { source = "packaging/icons/micbridge.svg", dest = "/usr/share/icons/hicolor/scalable/apps/micbridge.svg", mode = "644" },
+    { source = "packaging/icons/micbridge.png", dest = "/usr/share/icons/hicolor/256x256/apps/micbridge.png", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/micbridge/README.md", mode = "644", doc = true },
+]
+
+# Nazwy bibliotek, nie pakietow: rpm rozwiazuje je sam i dzieki temu ta sama
+# lista dziala w Fedorze i w openSUSE.
+[package.metadata.generate-rpm.requires]
+"libasound.so.2()(64bit)" = "*"
+"libpipewire-0.3.so.0()(64bit)" = "*"
+"libgtk-3.so.0()(64bit)" = "*"

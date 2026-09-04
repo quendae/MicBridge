@@ -34,6 +34,9 @@ enum Command {
     /// Wypisz urządzenia audio widoczne w systemie.
     Devices,
 
+    /// Sprawdź, czy ta maszyna jest gotowa wysyłać i odbierać.
+    Doctor,
+
     /// Wypisz sparowane maszyny.
     Peers,
 
@@ -111,6 +114,7 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Devices => list_devices(),
         Command::Discover { window_ms } => discover(window_ms),
+        Command::Doctor => doctor(),
         Command::Peers => list_peers(),
         Command::Forget { peer } => forget_peer(&peer),
         Command::Send {
@@ -212,6 +216,29 @@ fn discover(window_ms: u64) -> Result<()> {
         println!("  {:<24} {:<24}{note}", peer.name, peer.addr.to_string());
     }
     println!("\nWysyłanie: micbridge send --to \"{}\"", peers[0].name);
+    Ok(())
+}
+
+/// Przegląd gotowości. Kod wyjścia niezerowy przy błędzie, żeby dało się
+/// tego użyć w skrypcie albo w instalatorze.
+fn doctor() -> Result<()> {
+    let report = mb_app::doctor::check();
+    println!("MicBridge — przegląd\n");
+    for check in &report.checks {
+        println!("{check}");
+    }
+
+    println!();
+    match report.worst() {
+        mb_app::doctor::Grade::Ok => println!("Wszystko na miejscu."),
+        mb_app::doctor::Grade::Warn => {
+            println!("Da się pracować, ale nie wszystkie role są dostępne.");
+        }
+        mb_app::doctor::Grade::Fail => {
+            println!("Coś jest nie tak — patrz wskazówki wyżej.");
+            std::process::exit(1);
+        }
+    }
     Ok(())
 }
 

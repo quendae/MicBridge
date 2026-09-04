@@ -157,9 +157,18 @@ fn icon() -> Result<tray_icon::Icon> {
             let (dx, dy) = (x as f32 - centre, y as f32 - centre);
             let inside = dx * dx + dy * dy <= radius * radius;
 
-            // Kapsuła mikrofonu: prostokąt u góry, nóżka i podstawka.
-            let capsule = dx.abs() <= 3.5 && (-9.0..=1.0).contains(&dy);
-            let stem = dx.abs() <= 1.0 && (1.0..=7.0).contains(&dy);
+            // Kapsuła to odcinek pogrubiony o promień — z samego prostokąta
+            // wychodzi kielich, nie mikrofon. Ten sam kształt co ikona
+            // w `packaging/icons`, żeby program wyglądał wszędzie tak samo.
+            let (top, bottom, r) = (-5.5f32, -2.0f32, 3.5f32);
+            let capsule = if dy < top {
+                dx * dx + (dy - top).powi(2) <= r * r
+            } else if dy > bottom {
+                dx * dx + (dy - bottom).powi(2) <= r * r
+            } else {
+                dx.abs() <= r
+            };
+            let stem = dx.abs() <= 1.0 && (1.5..=6.5).contains(&dy);
             let base = dy > 6.0 && dy <= 8.0 && dx.abs() <= 5.0;
             let mic = capsule || stem || base;
 

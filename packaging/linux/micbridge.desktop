@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=MicBridge
+GenericName=Mikrofon przez sieć
+Comment=Przenosi mikrofon z jednego komputera na drugi
+Exec=micbridge-gui
+Icon=micbridge
+Terminal=false
+Categories=AudioVideo;Audio;Network;
+Keywords=mikrofon;microphone;audio;sieć;network;
+StartupWMClass=MicBridge
