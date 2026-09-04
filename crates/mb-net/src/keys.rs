@@ -118,13 +118,16 @@ mod tests {
     use super::*;
 
     fn temp_store() -> KeyStore {
+        // Licznik, nie zegar. Zegar systemowy w Windows tyka co kilkanaście
+        // milisekund, więc dwa testy startujące w tej samej chwili dostawały
+        // tę samą nazwę pliku i deptały sobie po nim — a że testy chodzą
+        // równolegle w jednym procesie, numer procesu ich nie rozróżniał.
+        // Stąd brała się zagadka „raz przechodzi, raz nie”.
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let path = std::env::temp_dir().join(format!(
             "micbridge-test-{}-{}.toml",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         KeyStore {
             path,
