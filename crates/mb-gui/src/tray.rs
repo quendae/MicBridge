@@ -4,16 +4,25 @@
 //! paska zadań. Zamknięcie okna go więc chowa, a nie kończy — wyjście jest
 //! w menu ikony, żeby nikt nie zamknął przez pomyłkę sesji, która akurat gra.
 //!
+//! Zdarzeń nie odbieramy z kanału biblioteki, tylko podstawiamy własną obsługę.
+//! Kanał trzeba by odpytywać przy rysowaniu klatki, a schowane okno klatek nie
+//! dostaje — menu wyglądałoby na żywe i nie robiło nic. Obsługa woła [`Waker`],
+//! ten przywraca okno, a dopiero potem pracę przejmuje zwykły bieg programu.
+//!
 //! Dwa systemy, dwie drogi. W Windows ikona żyje w pętli komunikatów okna,
 //! którą i tak mamy. W Linuksie wymaga GTK, a GTK nie pozwala się dotykać
 //! z innego wątku niż ten, który je zainicjował — pętla okna należy do winit
 //! i podzielić się nią nie da, więc cała ikona powstaje i mieszka na własnym
-//! wątku. Rozmawia z nami przez globalne kanały biblioteki, więc to, gdzie
-//! stoi, nie ma dla reszty programu znaczenia.
+//! wątku. To, gdzie stoi, nie ma dla reszty programu znaczenia: obie strony
+//! rozmawiają przez skrzynkę niżej.
+
+use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
-use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
+
+use crate::wake::Waker;
 
 /// Co użytkownik zrobił z ikoną.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,11 +31,11 @@ pub enum Action {
     Quit,
 }
 
-/// Identyfikatory pozycji menu — jedyne, co musi wrócić z wątku ikony.
-struct Ids {
-    show: MenuId,
-    quit: MenuId,
-}
+/// Skrzynka na jedno życzenie, wystawiona między obsługę zdarzeń a okno.
+///
+/// Jedno wystarczy: klikanie w ikonę szybciej, niż okno zdąży się odrysować,
+/// nie znaczy nic więcej niż jedno kliknięcie.
+type Slot = Arc<Mutex<Option<Action>>>;
 
 pub struct Tray {
     /// Uchwyt trzymany po to, żeby ikona nie zniknęła razem z nim.
@@ -34,43 +43,24 @@ pub struct Tray {
     /// W Linuksie jest pusty: ikona żyje na wątku GTK i nie wolno jej stamtąd
     /// zabierać ani tam zaglądać.
     _icon: Option<TrayIcon>,
-    ids: Ids,
+    slot: Slot,
 }
 
 impl Tray {
-    /// Zbiera to, co wydarzyło się od ostatniego zajrzenia.
-    ///
-    /// Kanały są globalne i nie blokują, więc wołamy to przy odrysowaniu okna.
+    /// Zabiera życzenie ze skrzynki, jeśli jakieś czeka.
     pub fn poll(&self) -> Option<Action> {
-        let mut action = None;
-        while let Ok(event) = MenuEvent::receiver().try_recv() {
-            if event.id == self.ids.quit {
-                return Some(Action::Quit);
-            }
-            if event.id == self.ids.show {
-                action = Some(Action::Show);
-            }
-        }
-        while let Ok(event) = TrayIconEvent::receiver().try_recv() {
-            // Kliknięcie w samą ikonę też ma przywracać okno — tego się po
-            // ikonie w zasobniku spodziewa każdy.
-            if let TrayIconEvent::Click { button, .. } = event {
-                if button == tray_icon::MouseButton::Left {
-                    action = Some(Action::Show);
-                }
-            }
-        }
-        action
+        self.slot.lock().ok().and_then(|mut slot| slot.take())
     }
 }
 
 #[cfg(not(target_os = "linux"))]
 impl Tray {
-    pub fn new() -> Result<Self> {
-        let (icon, ids) = build()?;
+    pub fn new(waker: &Waker) -> Result<Self> {
+        let slot = Slot::default();
+        let icon = build(&slot, waker)?;
         Ok(Self {
             _icon: Some(icon),
-            ids,
+            slot,
         })
     }
 }
@@ -82,10 +72,13 @@ impl Tray {
     /// Wraca dopiero, gdy ikona stoi albo gdy wiadomo, że nie stanie —
     /// inaczej okno zdążyłoby się narysować bez wiedzy, czy ma dokąd się
     /// chować.
-    pub fn new() -> Result<Self> {
+    pub fn new(waker: &Waker) -> Result<Self> {
         use std::sync::mpsc;
 
-        let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<Ids, String>>(1);
+        let slot = Slot::default();
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
+        let theirs = Arc::clone(&slot);
+        let waker = waker.clone();
         std::thread::Builder::new()
             .name("micbridge-tray".into())
             .spawn(move || {
@@ -93,9 +86,9 @@ impl Tray {
                     let _ = ready_tx.try_send(Err(format!("GTK nie wystartowało: {e}")));
                     return;
                 }
-                match build() {
-                    Ok((icon, ids)) => {
-                        let _ = ready_tx.try_send(Ok(ids));
+                match build(&theirs, &waker) {
+                    Ok(icon) => {
+                        let _ = ready_tx.try_send(Ok(()));
                         // Ikona musi przeżyć pętlę — i zniknąć dopiero z nią.
                         gtk::main();
                         drop(icon);
@@ -108,16 +101,28 @@ impl Tray {
             .map_err(|e| anyhow!("nie mogę uruchomić wątku ikony: {e}"))?;
 
         match ready_rx.recv() {
-            Ok(Ok(ids)) => Ok(Self { _icon: None, ids }),
+            Ok(Ok(())) => Ok(Self { _icon: None, slot }),
             Ok(Err(e)) => Err(anyhow!("{e}")),
             Err(_) => Err(anyhow!("wątek ikony zakończył się przed startem")),
         }
     }
 }
 
+/// Wkłada życzenie do skrzynki.
+///
+/// Zakończenie ma pierwszeństwo: gdyby oba trafiły przed jedną klatką,
+/// pokazanie okna tylko odwlekłoby wyjście, o które ktoś właśnie poprosił.
+fn note(slot: &Slot, action: Action) {
+    if let Ok(mut slot) = slot.lock() {
+        if *slot != Some(Action::Quit) {
+            *slot = Some(action);
+        }
+    }
+}
+
 /// Buduje menu i ikonę. Wołane na tym wątku, który dla danego systemu jest
 /// właściwy — w Linuksie na wątku GTK, gdzie indziej na wątku okna.
-fn build() -> Result<(TrayIcon, Ids)> {
+fn build(slot: &Slot, waker: &Waker) -> Result<TrayIcon> {
     let show = MenuItem::new("Pokaż okno", true, None);
     let quit = MenuItem::new("Zakończ", true, None);
     let menu = Menu::new();
@@ -126,17 +131,36 @@ fn build() -> Result<(TrayIcon, Ids)> {
     menu.append(&PredefinedMenuItem::separator()).map_err(bad)?;
     menu.append(&quit).map_err(bad)?;
 
-    let ids = Ids {
-        show: show.id().clone(),
-        quit: quit.id().clone(),
-    };
+    let (show_id, quit_id) = (show.id().clone(), quit.id().clone());
+    let (theirs, their_waker) = (Arc::clone(slot), waker.clone());
+    MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+        let action = if event.id == quit_id {
+            Action::Quit
+        } else if event.id == show_id {
+            Action::Show
+        } else {
+            return;
+        };
+        note(&theirs, action);
+        their_waker.wake();
+    }));
 
-    let icon = TrayIconBuilder::new()
+    let (theirs, their_waker) = (Arc::clone(slot), waker.clone());
+    TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+        // Kliknięcie w samą ikonę też ma przywracać okno — tego się po ikonie
+        // w zasobniku spodziewa każdy.
+        if let TrayIconEvent::Click { button, .. } = event {
+            if button == tray_icon::MouseButton::Left {
+                note(&theirs, Action::Show);
+                their_waker.wake();
+            }
+        }
+    }));
+
+    TrayIconBuilder::new()
         .with_tooltip("MicBridge")
         .with_menu(Box::new(menu))
         .with_icon(crate::icon::tray()?)
         .build()
-        .map_err(|e| anyhow!("nie mogę utworzyć ikony w zasobniku: {e}"))?;
-
-    Ok((icon, ids))
+        .map_err(|e| anyhow!("nie mogę utworzyć ikony w zasobniku: {e}"))
 }

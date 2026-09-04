@@ -13,6 +13,7 @@ mod engine;
 mod icon;
 mod state;
 mod tray;
+mod wake;
 mod widgets;
 
 use std::sync::Arc;
@@ -37,8 +38,8 @@ fn main() -> eframe::Result {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([680.0, 760.0])
-            .with_min_inner_size([460.0, 480.0])
+            .with_inner_size([680.0, 620.0])
+            .with_min_inner_size([460.0, 460.0])
             .with_title("MicBridge")
             .with_icon(icon::window()),
         ..Default::default()
@@ -81,8 +82,16 @@ struct App {
     /// Ikona w zasobniku. `None`, gdy system jej nie daje — wtedy zamknięcie
     /// okna po prostu kończy program, bo inaczej nie byłoby jak do niego wrócić.
     tray: Option<tray::Tray>,
+    /// Przywraca okno na ekran, gdy schowane przestaje dostawać klatki.
+    waker: wake::Waker,
     /// Czy okno jest schowane w zasobniku.
     hidden: bool,
+
+    /// Nazwy sparowanych maszyn. Trzymane, bo lista siedzi w pliku, a klatek
+    /// jest kilka na sekundę — czytanie go za każdym razem byłoby zaglądaniem
+    /// na dysk bez powodu.
+    paired: Vec<String>,
+    paired_at: Option<Instant>,
 }
 
 /// Do kogo nadajemy.
@@ -95,7 +104,8 @@ enum Target {
 }
 
 impl App {
-    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let waker = wake::Waker::new(cc);
         let mut app = Self {
             state: Arc::new(State::default()),
             recv: Engine::new(Which::Recv),
@@ -114,17 +124,35 @@ impl App {
             peers: Vec::new(),
             peers_refreshed: None,
             peers_pending: None,
-            tray: match tray::Tray::new() {
+            tray: match tray::Tray::new(&waker) {
                 Ok(t) => Some(t),
                 Err(e) => {
                     tracing::warn!(error = %e, "brak ikony w zasobniku");
                     None
                 }
             },
+            waker,
             hidden: false,
+            paired: Vec::new(),
+            paired_at: None,
         };
         app.reload_devices();
+        app.refresh_paired(true);
         app
+    }
+
+    /// Odświeża listę sparowanych maszyn, ale nie częściej niż co sekundę.
+    fn refresh_paired(&mut self, force: bool) {
+        let stale = self
+            .paired_at
+            .is_none_or(|t| t.elapsed() > Duration::from_secs(1));
+        if !force && !stale {
+            return;
+        }
+        self.paired_at = Some(Instant::now());
+        self.paired = mb_net::KeyStore::open()
+            .map(|store| store.peers().map(str::to_owned).collect())
+            .unwrap_or_default();
     }
 
     fn reload_devices(&mut self) {
@@ -202,14 +230,19 @@ impl eframe::App for App {
         self.recv.reap();
         self.send.reap();
         self.collect_peers(ctx);
-        self.handle_tray(ctx);
+        self.refresh_paired(false);
+        if self.handle_tray(ctx) {
+            return;
+        }
         self.handle_close(ctx);
 
         // Sesje meldują co sekundę, więc okno musi samo wracać do życia — bez
-        // tego stan zamarłby do najbliższego ruchu myszą. Schowane budzimy
-        // częściej, nie rzadziej: to jedyna pętla, która zauważy kliknięcie
-        // w ikonę, a wtedy pół sekundy zwłoki już widać.
-        ctx.request_repaint_after(Duration::from_millis(if self.hidden { 250 } else { 500 }));
+        // tego stan zamarłby do najbliższego ruchu myszą. Schowanego nie ma
+        // sensu budzić: system i tak nie da mu klatki, a nie ma tam nic do
+        // pokazania. Kliknięcie w ikonę obudzi je wtedy inną drogą (`wake.rs`).
+        if !self.hidden {
+            ctx.request_repaint_after(Duration::from_millis(500));
+        }
 
         egui::TopBottomPanel::top("naglowek").show(ctx, |ui| {
             ui.add_space(6.0);
@@ -222,14 +255,18 @@ impl eframe::App for App {
             ui.add_space(6.0);
         });
 
+        egui::TopBottomPanel::bottom("stopka").show(ctx, |ui| {
+            ui.add_space(4.0);
+            self.footer_ui(ui);
+            ui.add_space(4.0);
+        });
+
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 self.pairing_ui(ui);
                 self.recv_ui(ui, ctx);
                 ui.add_space(14.0);
                 self.send_ui(ui, ctx);
-                ui.add_space(14.0);
-                self.options_ui(ui);
             });
         });
     }
@@ -250,7 +287,9 @@ impl App {
         if !ctx.input(|i| i.viewport().close_requested()) {
             return;
         }
-        if self.tray.is_none() {
+        // Chowamy się tylko tam, skąd umiemy wrócić. Gdzie indziej zamknięcie
+        // znaczy to, co zwykle — lepsze niż program bez okna i bez wyjścia.
+        if self.tray.is_none() || !self.waker.can_restore() {
             return;
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -258,22 +297,28 @@ impl App {
         self.hidden = true;
     }
 
-    fn handle_tray(&mut self, ctx: &egui::Context) {
+    /// Zwraca `true`, gdy program właśnie się kończy i nie ma po co rysować.
+    fn handle_tray(&mut self, ctx: &egui::Context) -> bool {
         let Some(tray) = &self.tray else {
-            return;
+            return false;
         };
         match tray.poll() {
             Some(tray::Action::Show) => {
+                // Okno już wróciło na ekran — zrobił to budzik, zanim ta
+                // klatka w ogóle powstała. Zostaje uzgodnić stan, bo eframe
+                // wciąż uważa je za schowane.
                 self.hidden = false;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                false
             }
             Some(tray::Action::Quit) => {
                 self.recv.stop();
                 self.send.stop();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                true
             }
-            None => {}
+            None => false,
         }
     }
 }

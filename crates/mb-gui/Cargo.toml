@@ -33,6 +33,20 @@ eframe = { version = "0.32", default-features = false, features = [
 # a która jest kolejnym pakietem do doinstalowania w Linuksie.
 tray-icon = { version = "0.24", default-features = false }
 
+[target.'cfg(windows)'.dependencies]
+# Przywracanie schowanego okna. eframe robi to dopiero przy rysowaniu klatki,
+# a schowane okno klatek nie dostaje — patrz `wake.rs`.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# Po uchwyt okna, którego te wywołania potrzebują. Wersja musi zgadzać się
+# z tą, w której eframe go zwraca.
+raw-window-handle = "0.6"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # W Linuksie ikona żyje w pętli GTK, osobnej od pętli okna. Cecha „gtk” musi
 # wrócić: to za nią chowa się cała linuksowa implementacja menu, więc bez niej

@@ -231,35 +231,37 @@ impl App {
         }
     }
 
-    pub(crate) fn options_ui(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
-        if ui
-            .checkbox(&mut self.autostart, "uruchamiaj przy starcie systemu")
-            .changed()
-        {
-            self.autostart_error = match autostart::set(self.autostart) {
-                Ok(()) => None,
-                Err(e) => {
-                    // Przełącznik ma pokazywać stan faktyczny, nie życzenie.
-                    self.autostart = !self.autostart;
-                    Some(format!("{e}"))
-                }
-            };
-        }
+    /// Pasek przy dolnej krawędzi: ustawienie, które dotyczy całego programu,
+    /// i przypomnienie, z kim jest już umówiony.
+    pub(crate) fn footer_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .checkbox(&mut self.autostart, "uruchamiaj przy starcie systemu")
+                .changed()
+            {
+                self.autostart_error = match autostart::set(self.autostart) {
+                    Ok(()) => None,
+                    Err(e) => {
+                        // Przełącznik ma pokazywać stan faktyczny, nie życzenie.
+                        self.autostart = !self.autostart;
+                        Some(format!("{e}"))
+                    }
+                };
+            }
+
+            if !self.paired.is_empty() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("Sparowane: {}", self.paired.join(", ")))
+                            .weak()
+                            .size(11.0),
+                    );
+                });
+            }
+        });
+
         if let Some(e) = &self.autostart_error {
             ui.colored_label(LOSS, e);
-        }
-
-        if let Ok(store) = mb_net::KeyStore::open() {
-            let peers: Vec<&str> = store.peers().collect();
-            if !peers.is_empty() {
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(format!("Sparowane: {}", peers.join(", ")))
-                        .weak()
-                        .size(11.0),
-                );
-            }
         }
     }
 }
