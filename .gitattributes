@@ -1,2 +1,6 @@
 # RTF trzyma znaki końca linii po windowsowemu i tak ma zostać.
 *.rtf -text
+
+# Surowe piksele ikony. Bez tego Git w Windows wziąłby część bajtów za
+# końce linii i podmienił je przy pobraniu.
+*.rgba binary

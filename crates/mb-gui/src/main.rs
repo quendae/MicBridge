@@ -10,6 +10,7 @@
 
 mod autostart;
 mod engine;
+mod icon;
 mod state;
 mod tray;
 mod widgets;
@@ -38,7 +39,8 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([680.0, 760.0])
             .with_min_inner_size([460.0, 480.0])
-            .with_title("MicBridge"),
+            .with_title("MicBridge")
+            .with_icon(icon::window()),
         ..Default::default()
     };
 

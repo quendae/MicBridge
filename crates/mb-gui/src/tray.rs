@@ -134,52 +134,9 @@ fn build() -> Result<(TrayIcon, Ids)> {
     let icon = TrayIconBuilder::new()
         .with_tooltip("MicBridge")
         .with_menu(Box::new(menu))
-        .with_icon(icon()?)
+        .with_icon(crate::icon::tray()?)
         .build()
         .map_err(|e| anyhow!("nie mogę utworzyć ikony w zasobniku: {e}"))?;
 
     Ok((icon, ids))
-}
-
-/// Ikona rysowana w kodzie: mikrofon na okrągłym tle.
-///
-/// Wolę dwadzieścia linii arytmetyki niż plik graficzny do wnoszenia przez
-/// wszystkie etapy pakowania.
-fn icon() -> Result<tray_icon::Icon> {
-    const SIZE: u32 = 32;
-    let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
-
-    let centre = (SIZE as f32 - 1.0) / 2.0;
-    let radius = centre - 0.5;
-
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let (dx, dy) = (x as f32 - centre, y as f32 - centre);
-            let inside = dx * dx + dy * dy <= radius * radius;
-
-            // Kapsuła to odcinek pogrubiony o promień — z samego prostokąta
-            // wychodzi kielich, nie mikrofon. Ten sam kształt co ikona
-            // w `packaging/icons`, żeby program wyglądał wszędzie tak samo.
-            let (top, bottom, r) = (-5.5f32, -2.0f32, 3.5f32);
-            let capsule = if dy < top {
-                dx * dx + (dy - top).powi(2) <= r * r
-            } else if dy > bottom {
-                dx * dx + (dy - bottom).powi(2) <= r * r
-            } else {
-                dx.abs() <= r
-            };
-            let stem = dx.abs() <= 1.0 && (1.5..=6.5).contains(&dy);
-            let base = dy > 6.0 && dy <= 8.0 && dx.abs() <= 5.0;
-            let mic = capsule || stem || base;
-
-            rgba.extend_from_slice(&match (inside, mic) {
-                (_, true) => [245, 245, 250, 255],
-                (true, false) => [40, 90, 150, 255],
-                (false, false) => [0, 0, 0, 0],
-            });
-        }
-    }
-
-    tray_icon::Icon::from_rgba(rgba, SIZE, SIZE)
-        .map_err(|e| anyhow!("nie mogę zbudować ikony: {e}"))
 }

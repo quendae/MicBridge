@@ -1,3 +1,5 @@
+<img src="packaging/icons/logo.png" alt="MicBridge" width="88" align="left" hspace="16">
+
 # MicBridge
 
 Przenosi mikrofon z jednego komputera na drugi po sieci lokalnej. Na maszynie
