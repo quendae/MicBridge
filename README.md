@@ -8,10 +8,9 @@ Założenia, decyzje projektowe i plan działania: **[docs/ARCHITEKTURA.md](docs
 (ta sama treść z diagramami, do czytania w przeglądarce:
 [dokument techniczny](https://claude.ai/code/artifact/c6f3e44a-ac5e-4cda-8299-fce46b05237f)).
 
-## Stan: etap M4
+## Stan: etap M5
 
-Program jest kompletny: silnik z M2, wirtualne wejście z M3, a od M4 także
-wykrywanie w sieci, parowanie, szyfrowanie i okno. Zostaje pakowanie.
+Program jest kompletny i pakuje się do deb, rpm, AUR i MSI.
 
 | Etap | Zakres | Stan |
 |------|--------|------|
@@ -20,11 +19,51 @@ wykrywanie w sieci, parowanie, szyfrowanie i okno. Zostaje pakowanie.
 | M2 | Opus, FEC, bufor adaptacyjny, korekcja dryfu, resampling | **gotowe** |
 | M3 | wirtualne wejście: node PipeWire, wykrywanie VB-CABLE | **gotowe** — sprawdzone na Archu (PipeWire 1.6) i Windows 10 |
 | M4 | mDNS, parowanie SPAKE2, szyfrowanie, okno egui | **gotowe** |
-| M5 | pakiety deb/rpm/AUR/Flatpak/MSI | |
+| M5 | pakiety deb/rpm/AUR/MSI | **gotowe** — Flatpak odpuszczony, patrz niżej |
 
-Czego wciąż nie ma: paczek instalacyjnych. Program trzeba na razie zbudować
-samemu, ale poza tym obietnica — „uruchom na obu, sparuj raz, działa” — jest
-na miejscu.
+Flatpaka świadomie nie ma: piaskownica nie daje bezpośredniego dostępu do
+PipeWire, a wirtualny mikrofon przez portal to osobna niewiadoma. Reszta dróg
+instalacji pokrywa te same systemy mniejszym kosztem.
+
+## Instalacja
+
+| System | Jak |
+|---|---|
+| Arch i pochodne | `makepkg -si` w `packaging/arch`, albo z AUR gdy tam trafi |
+| Debian, Ubuntu | `sudo apt install ./micbridge_*.deb` |
+| Fedora, openSUSE | `sudo dnf install ./micbridge-*.rpm` |
+| Windows | `MicBridge-*-x64.msi` |
+
+Paczki powstają w [wydaniach](https://github.com/quendae/MicBridge/releases).
+Każda niesie oba programy: okno `micbridge-gui` i wiersz poleceń `micbridge`.
+
+Po instalacji warto sprawdzić, czy niczego nie brakuje:
+
+```bash
+micbridge doctor
+```
+
+Powie osobno, czy ta maszyna może **wysyłać** (wystarczy mikrofon) i czy może
+**odbierać** (potrzebne miejsce, w które da się wpuścić cudzy dźwięk). W Windows
+to drugie wymaga jednorazowo [VB-CABLE](https://vb-audio.com/Cable/) — instalator
+MSI o tym mówi, ale nie blokuje instalacji, bo do samego wysyłania kabel nie jest
+potrzebny.
+
+### Budowanie paczek u siebie
+
+```bash
+# deb i rpm
+cargo install cargo-deb cargo-generate-rpm
+cargo build --workspace --release
+cargo deb -p mb-gui --no-build --output dist/
+cargo generate-rpm -p crates/mb-gui --output dist/
+
+# Arch
+cd packaging/arch && makepkg -si
+```
+
+Ikony generuje `packaging/icons/` — pliki są w repozytorium, więc do zwykłego
+budowania niczego nie trzeba.
 
 ## Budowanie
 
@@ -39,9 +78,6 @@ cargo build --release
 ```
 
 ### Linux
-
-Potrzebne nagłówki ALSA — cpal buduje się na nich niezależnie od tego, że
-docelowo pracujemy przez PipeWire:
 
 Nagłówki ALSA są potrzebne, bo cpal linkuje się z nimi niezależnie od tego, że
 docelowo pracujemy przez PipeWire. Nagłówki PipeWire i libclang idą do

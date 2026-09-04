@@ -1,3 +1,6 @@
 /target
 **/*.rs.bk
 *.pdb
+
+# paczki budowane lokalnie
+dist/
