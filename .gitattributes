@@ -1,2 +1,2 @@
-* text=auto eol=lf
-*.png binary
+# RTF trzyma znaki końca linii po windowsowemu i tak ma zostać.
+*.rtf -text
