@@ -19,6 +19,7 @@ mb-proto = { path = "../mb-proto" }
 mb-audio = { path = "../mb-audio" }
 mb-net = { path = "../mb-net" }
 mb-engine = { path = "../mb-engine" }
+mb-i18n = { path = "../mb-i18n" }
 anyhow.workspace = true
 clap.workspace = true
 ringbuf.workspace = true

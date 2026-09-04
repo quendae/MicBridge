@@ -141,7 +141,9 @@ fn wrong_key(e: snow::Error) -> anyhow::Error {
 fn expect_handshake<S: Read>(stream: &mut S) -> Result<Vec<u8>> {
     match ControlMsg::read_from(stream)? {
         ControlMsg::Handshake { msg } => Ok(msg),
-        ControlMsg::Reject { reason } => bail!("druga strona przerwała: {reason}"),
+        ControlMsg::Reject { reason } => {
+            bail!("{}", mb_i18n::t1(mb_i18n::Key::ErrPeerAborted, reason))
+        }
         other => bail!("oczekiwałem uzgodnienia, dostałem {other:?}"),
     }
 }

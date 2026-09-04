@@ -51,6 +51,22 @@ to drugie wymaga jednorazowo [VB-CABLE](https://vb-audio.com/Cable/) — instala
 MSI o tym mówi, ale nie blokuje instalacji, bo do samego wysyłania kabel nie jest
 potrzebny.
 
+### Język
+
+Program mówi po polsku, angielsku, niemiecku, hiszpańsku, francusku, włosku
+i ukraińsku. Wybiera sam, na podstawie ustawień systemu — nie ma osobnego
+przełącznika, bo kto ustawił sobie system po niemiecku, chce niemieckiego
+wszędzie. Nieznany język dostaje angielski.
+
+Do sprawdzenia albo na przekór:
+
+```bash
+MICBRIDGE_LANG=de micbridge doctor
+```
+
+Teksty leżą w jednej tabeli — `crates/mb-i18n/src/catalog.rs`. Dołożenie języka
+to dopisanie kolumny; pominięcie choć jednego napisu nie skompiluje się.
+
 ### Budowanie paczek u siebie
 
 ```bash

@@ -72,7 +72,9 @@ pub fn establish<S: Read + Write>(stream: &mut S, ui: &dyn Reporter) -> Result<S
 
     let (peer, knows_me) = match ControlMsg::read_from(stream)? {
         ControlMsg::Ready { host, known } => (host, known),
-        ControlMsg::Reject { reason } => bail!("odbiornik odrzucił połączenie: {reason}"),
+        ControlMsg::Reject { reason } => {
+            bail!("{}", mb_i18n::t1(mb_i18n::Key::ErrRejected, reason))
+        }
         other => bail!("nieoczekiwana odpowiedź na przedstawienie się: {other:?}"),
     };
 

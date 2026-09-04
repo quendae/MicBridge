@@ -10,6 +10,7 @@
 use std::io::{BufRead, Write};
 
 use anyhow::{bail, Context, Result};
+use mb_i18n::{t, t1, t2, Key as K};
 
 /// Stan sesji po stronie odbierającej, raz na sekundę.
 #[derive(Debug, Clone, Default)]
@@ -86,62 +87,71 @@ impl Reporter for Console {
 
     fn recv_status(&self, s: &RecvStatus) {
         if s.idle {
-            println!("  czekam — nikt jeszcze nie słucha");
+            println!("{}", t(K::CliWaiting));
             return;
         }
         println!(
-            "  bufor {:>3.0}+{:>2.0} ms   cel {:>3.0}   strat {:>4.1}% (FEC {})   \
-             jitter {:>4.1} ms   dryf {:+.3}%{}",
+            "  {} {:>3.0}+{:>2.0} ms   {} {:>3.0}   {} {:>4.1}% (FEC {})   \
+             {} {:>4.1} ms   {} {:+.3}%{}",
+            t(K::CliBuf),
             s.buffer_ms,
             s.ring_ms,
+            t(K::CliTarget),
             s.target_ms,
+            t(K::CliLoss),
             s.loss_pct,
             s.recovered,
+            t(K::NumJitter),
             s.jitter_ms,
+            t(K::CliDrift),
             s.drift_pct * 100.0,
             // Przepełnienie bufora nie liczy się jako strata pakietu, ale
             // wyrzucone ramki słychać tak samo — bez tego licznika stan
             // „strat 0,0%” towarzyszył rwącemu się dźwiękowi.
             match (s.starved, s.dropped) {
                 (0, 0) => String::new(),
-                (n, 0) => format!("   NIEDOMIAR {n}"),
-                (0, n) => format!("   WYRZUCONO {n} ramek (bufor pełny)"),
-                (a, b) => format!("   NIEDOMIAR {a}   WYRZUCONO {b}"),
+                (n, 0) => t1(K::CliStarved, n),
+                (0, n) => t1(K::CliDroppedFull, n),
+                (a, b) => t2(K::CliBoth, a, b),
             }
         );
     }
 
     fn send_status(&self, s: &SendStatus) {
-        let mut tail = format!("   FEC na {}% strat", s.fec_pct);
+        let mut tail = t1(K::CliFecFor, s.fec_pct);
         if s.overruns > 0 {
-            tail.push_str(&format!("   zgubiono {} próbek", s.overruns));
+            tail.push_str(&t1(K::CliLostSamples, s.overruns));
         }
         if s.dropped_on_purpose > 0 {
-            tail.push_str(&format!("   zgubiono celowo {}", s.dropped_on_purpose));
+            tail.push_str(&t1(K::CliDroppedOnPurpose, s.dropped_on_purpose));
         }
         println!(
-            "  {:>8} ramek  {:>6.1} kbps   szczyt {:>6.1} dBFS{tail}",
-            s.frames, s.kbps, s.peak_dbfs
+            "  {:>8} {}  {:>6.1} kbps   {} {:>6.1} dBFS{tail}",
+            s.frames,
+            t(K::CliFramesWord),
+            s.kbps,
+            t(K::CliPeakWord),
+            s.peak_dbfs
         );
     }
 
     fn show_code(&self, peer: &str, code: &str) {
-        println!("\n„{peer}” prosi o sparowanie.");
-        println!("  KOD: {}", mb_net::pair::format_code(code));
-        println!("  Przepisz go na drugiej maszynie.");
+        println!("\n{}", t1(K::CliWantsPair, peer));
+        println!("{}", t1(K::CliCode, mb_net::pair::format_code(code)));
+        println!("{}", t(K::CliTypeOnOther));
     }
 
     fn ask_code(&self, peer: &str) -> Result<String> {
-        println!("\n„{peer}” nie jest jeszcze sparowany.");
-        println!("Na jego ekranie pojawił się sześciocyfrowy kod.");
-        print!("Przepisz go tutaj: ");
+        println!("\n{}", t1(K::CliNotPaired, peer));
+        println!("{}", t(K::CliCodeOnScreen));
+        print!("{}", t(K::CliTypeHere));
         std::io::stdout().flush().ok();
 
         let mut line = String::new();
         std::io::stdin()
             .lock()
             .read_line(&mut line)
-            .context("nie mogę odczytać kodu")?;
+            .context(t(K::ErrReadCode))?;
         check_code(&mb_net::pair::normalize_code(&line))
     }
 
@@ -181,11 +191,7 @@ impl<R: Reporter> Reporter for FixedCode<R> {
 /// stronie jako „parowanie odrzucone”.
 pub fn check_code(code: &str) -> Result<String> {
     if code.len() != mb_net::pair::CODE_DIGITS {
-        bail!(
-            "kod ma {} cyfr, oczekuję {}",
-            code.len(),
-            mb_net::pair::CODE_DIGITS
-        );
+        bail!(t2(K::ErrCodeLength, code.len(), mb_net::pair::CODE_DIGITS));
     }
     Ok(code.to_string())
 }

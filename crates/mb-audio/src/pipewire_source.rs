@@ -124,7 +124,7 @@ where
         .map_err(|e| anyhow!("nie mogę utworzyć kontekstu PipeWire: {e}"))?;
     let core = context
         .connect_rc(None)
-        .map_err(|e| anyhow!("nie mogę połączyć się z serwerem PipeWire: {e}"))?;
+        .map_err(|e| anyhow!("{}", mb_i18n::t1(mb_i18n::Key::ErrPipewireConnect, e)))?;
 
     let _quit = quit_rx.attach(mainloop.loop_(), {
         let mainloop = mainloop.clone();

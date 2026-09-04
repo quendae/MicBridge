@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Context, Result};
+use mb_i18n::{t, t1, t2, Key as K};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 
@@ -99,9 +100,9 @@ pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Resul
     let max_frames = (MAX_BUFFER_MS / FRAME_MS) as usize;
 
     let listener =
-        TcpListener::bind(listen_addr).with_context(|| format!("nie mogę zająć {listen_addr}"))?;
+        TcpListener::bind(listen_addr).with_context(|| t1(K::ErrCannotBind, listen_addr))?;
     listener.set_nonblocking(true)?;
-    ui.line(&format!("Nasłuchuję na {listen_addr}."));
+    ui.line(&t1(K::SesListening, listen_addr));
 
     // Ogłoszenie żyje tak długo jak nasłuch. Nie zrywamy go na czas sesji:
     // druga maszyna ma widzieć ten komputer także wtedy, gdy akurat jest
@@ -109,14 +110,14 @@ pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Resul
     let _beacon = if opts.announce {
         match mb_net::Advertiser::start(listen_addr.port()) {
             Ok(a) => {
-                ui.line(&format!("Widoczny w sieci jako „{}”.", mb_net::hostname()));
+                ui.line(&t1(K::SesVisibleAs, mb_net::hostname()));
                 Some(a)
             }
             Err(e) => {
                 // Brak multicastu nie może zatrzymać odbiornika: adres da się
                 // wpisać ręcznie i to jest cała droga awaryjna.
                 tracing::warn!(error = %e, "nie mogę ogłosić się w sieci");
-                ui.line("Nie mogę ogłosić się w sieci — druga strona musi podać adres ręcznie.");
+                ui.line(t(K::SesCannotAnnounce));
                 None
             }
         }
@@ -156,12 +157,12 @@ pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Resul
                 };
                 if let Err(e) = session(control, &cfg, &running, &pairing, ui) {
                     tracing::error!(error = %e, "sesja zakończona błędem");
-                    ui.line(&format!("Sesja zakończona: {e}"));
+                    ui.line(&t1(K::SesEnded, e));
                 }
                 if !running.load(Ordering::Relaxed) {
                     break;
                 }
-                ui.line("Czekam na kolejne połączenie.");
+                ui.line(t(K::SesWaitNext));
             }
             Err(e) => tracing::warn!(error = %e, "nieudane połączenie przychodzące"),
         }
@@ -272,18 +273,15 @@ fn session(
 
     ui.connected(
         &format!("{} ({})", peer_name, peer.ip()),
-        &format!("{} — źródło: {}", sink.name(), hello.device),
+        &t2(K::SesSource, sink.name(), &hello.device),
     );
     if device_rate != SAMPLE_RATE {
-        ui.line(&format!("  konwersja {SAMPLE_RATE} Hz → {device_rate} Hz"));
+        ui.line(&t2(K::SesConversion, SAMPLE_RATE, device_rate));
     }
     if sink.is_input_device() {
-        ui.line(&format!(
-            "  w aplikacji (Discord, OBS, gra) wybierz mikrofon „{}”",
-            mb_audio::DISPLAY_NAME
-        ));
+        ui.line(&t1(K::SesPickMicNamed, mb_audio::DISPLAY_NAME));
     } else {
-        ui.line("  w aplikacji wybierz mikrofon odpowiadający temu urządzeniu");
+        ui.line(t(K::SesPickMicDevice));
         if let Some(hint) = mb_audio::latency_hint(sink.name()) {
             ui.line(&format!("  {hint}"));
         }

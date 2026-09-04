@@ -15,6 +15,7 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 use eframe::egui;
 use mb_app::ui::{RecvStatus, Reporter, SendStatus};
+use mb_i18n::{t, t1, t2, Key as K};
 
 /// Ile pomiarów trzyma wykres. Przy jednym na sekundę to dwie minuty — dość,
 /// żeby zobaczyć, że coś się psuje, i za mało, żeby zjadło pamięć.
@@ -170,27 +171,36 @@ impl Reporter for GuiReporter {
             side.latency.push(status.latency_ms());
             side.loss.push(status.loss_pct);
             side.numbers = vec![
-                ("poduszka".into(), format!("{:.0} ms", status.buffer_ms)),
-                ("karta".into(), format!("{:.0} ms", status.ring_ms)),
-                ("jitter".into(), format!("{:.1} ms", status.jitter_ms)),
-                ("FEC".into(), format!("{} ramek", status.recovered)),
-                ("dryf".into(), format!("{:+.2}%", status.drift_pct * 100.0)),
+                (
+                    t(K::NumCushion).into(),
+                    format!("{:.0} ms", status.buffer_ms),
+                ),
+                (t(K::NumCard).into(), format!("{:.0} ms", status.ring_ms)),
+                (
+                    t(K::NumJitter).into(),
+                    format!("{:.1} ms", status.jitter_ms),
+                ),
+                (t(K::NumFec).into(), t1(K::FramesN, status.recovered)),
+                (
+                    t(K::NumDrift).into(),
+                    format!("{:+.2}%", status.drift_pct * 100.0),
+                ),
             ];
             if status.dropped > 0 {
                 side.numbers
-                    .push(("wyrzucone".into(), format!("{} ramek", status.dropped)));
+                    .push((t(K::NumDropped).into(), t1(K::FramesN, status.dropped)));
             }
             if status.starved > 0 {
                 side.numbers
-                    .push(("niedomiar".into(), format!("{} próbek", status.starved)));
+                    .push((t(K::NumStarved).into(), t1(K::SamplesN, status.starved)));
             }
             side.detail = if status.idle {
-                "czekam — nikt jeszcze nie słucha tego mikrofonu".into()
+                t(K::NobodyListening).into()
             } else {
-                format!(
-                    "opóźnienie {:.0} ms, strat {:.1}%",
-                    status.latency_ms(),
-                    status.loss_pct
+                t2(
+                    K::LatencyLoss,
+                    format!("{:.0}", status.latency_ms()),
+                    format!("{:.1}", status.loss_pct),
                 )
             };
         });
@@ -204,19 +214,26 @@ impl Reporter for GuiReporter {
             side.latency.push(status.latency_ms);
             side.loss.push(status.loss_pct);
             side.numbers = vec![
-                ("przepływność".into(), format!("{:.0} kbps", status.kbps)),
-                ("szczyt".into(), format!("{:.0} dBFS", status.peak_dbfs)),
-                ("jitter".into(), format!("{:.1} ms", status.jitter_ms)),
-                ("FEC na".into(), format!("{}% strat", status.fec_pct)),
-                ("ramek".into(), format!("{}", status.frames)),
+                (t(K::NumBitrate).into(), format!("{:.0} kbps", status.kbps)),
+                (
+                    t(K::NumPeak).into(),
+                    format!("{:.0} dBFS", status.peak_dbfs),
+                ),
+                (
+                    t(K::NumJitter).into(),
+                    format!("{:.1} ms", status.jitter_ms),
+                ),
+                (t(K::NumFecFor).into(), t1(K::PctLoss, status.fec_pct)),
+                (t(K::NumFrames).into(), format!("{}", status.frames)),
             ];
             if status.overruns > 0 {
                 side.numbers
-                    .push(("zgubione".into(), format!("{} próbek", status.overruns)));
+                    .push((t(K::NumLost).into(), t1(K::SamplesN, status.overruns)));
             }
-            side.detail = format!(
-                "opóźnienie {:.0} ms, strat {:.1}%",
-                status.latency_ms, status.loss_pct
+            side.detail = t2(
+                K::LatencyLoss,
+                format!("{:.0}", status.latency_ms),
+                format!("{:.1}", status.loss_pct),
             );
         });
     }
@@ -241,7 +258,7 @@ impl Reporter for GuiReporter {
         loop {
             if prompt.cancelled {
                 prompt.peer = None;
-                bail!("parowanie przerwane");
+                bail!("{}", t(K::ErrPairingCancelled));
             }
             if let Some(code) = prompt.answer.take() {
                 prompt.peer = None;
@@ -255,7 +272,7 @@ impl Reporter for GuiReporter {
             prompt = next;
             if timeout.timed_out() {
                 prompt.peer = None;
-                bail!("nikt nie wpisał kodu");
+                bail!("{}", t(K::ErrNobodyTypedCode));
             }
         }
     }

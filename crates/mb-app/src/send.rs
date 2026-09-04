@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
+use mb_i18n::{t, t1, t2, Key as K};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 
@@ -183,7 +184,7 @@ pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Resul
     let mut resampler = if device_rate == SAMPLE_RATE {
         None
     } else {
-        ui.line(&format!("Konwersja {device_rate} Hz → {SAMPLE_RATE} Hz."));
+        ui.line(&t2(K::SesConversionSend, device_rate, SAMPLE_RATE));
         Some(VariableResampler::new(
             SAMPLE_RATE as f64 / device_rate as f64,
             RESAMPLE_CHUNK,
@@ -217,7 +218,7 @@ pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Resul
 
     let accept = match recv_secure(&mut control, &channel)? {
         ControlMsg::Accept(a) => a,
-        ControlMsg::Reject { reason } => bail!("odbiornik odrzucił połączenie: {reason}"),
+        ControlMsg::Reject { reason } => bail!("{}", t1(K::ErrRejected, reason)),
         other => bail!("nieoczekiwana odpowiedź na HELLO: {other:?}"),
     };
     let cipher = mb_net::MediaCipher::new(&accept.media_key)?;
@@ -307,11 +308,9 @@ pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Resul
 
     let mut dropper = Dropper::new(drop_pct);
     if drop_pct > 0.0 {
-        ui.line(&format!(
-            "UWAGA: celowo gubię {drop_pct}% pakietów (tryb diagnostyczny)."
-        ));
+        ui.line(&t1(K::SesDroppingOnPurpose, drop_pct));
     }
-    ui.line(&format!("Nadaję Opusem, {} kbps.", bitrate / 1000));
+    ui.line(&t1(K::SesOpusAt, bitrate / 1000));
 
     while running.load(Ordering::Relaxed) {
         if consumer.occupied_len() < RESAMPLE_CHUNK {
@@ -403,7 +402,7 @@ pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Resul
     }
     .write_to(&mut control);
     let _ = control.flush();
-    ui.line(&format!("Zakończono. Wysłano {sent} ramek."));
+    ui.line(&t1(K::SesDone, sent));
     Ok(())
 }
 
@@ -419,7 +418,7 @@ fn resolve(target: &str, default_port: u16) -> Result<SocketAddr> {
         .to_socket_addrs()
         .with_context(|| format!("nie umiem rozwiązać adresu `{target}`"))?
         .next()
-        .ok_or_else(|| anyhow!("adres `{target}` nie wskazuje na nic"))
+        .ok_or_else(|| anyhow!("{}", t1(K::ErrTargetNothing, target)))
 }
 
 /// Rozstrzyga, czy użytkownik podał port.
@@ -444,7 +443,7 @@ fn target_addr(target: &str, ui: &dyn Reporter) -> Result<SocketAddr> {
         Ok(addr) => Ok(addr),
         Err(e) => match peer_by_name(target, ui)? {
             Some(peer) => {
-                ui.line(&format!("„{}” to {}.", peer.name, peer.addr));
+                ui.line(&t2(K::SesPeerIs, &peer.name, peer.addr));
                 Ok(peer.addr)
             }
             None => Err(e),
@@ -463,36 +462,33 @@ fn peer_by_name(fragment: &str, ui: &dyn Reporter) -> Result<Option<mb_net::Peer
 fn sole_peer(ui: &dyn Reporter) -> Result<SocketAddr> {
     let peers = discover(ui)?;
     match peers.len() {
-        0 => bail!(
-            "nie widzę żadnego odbiornika w sieci.\n\
-             Uruchom `micbridge recv` na drugiej maszynie. Jeśli już działa, \
-             router może blokować ruch multicast między klientami — wtedy podaj \
-             adres wprost: `--to 192.168.1.40`."
-        ),
+        0 => bail!("{}", t(K::ErrNoReceiver)),
         1 => {
             let peer = peers.into_iter().next().expect("jeden jest");
-            ui.line(&format!("Znalazłem „{}” pod {}.", peer.name, peer.addr));
+            ui.line(&t2(K::SesFound, &peer.name, peer.addr));
             Ok(peer.addr)
         }
         _ => {
-            ui.line("W sieci jest kilka odbiorników:");
+            ui.line(t(K::SesSeveral));
             for peer in &peers {
                 ui.line(&format!("  {:<24} {}", peer.name, peer.addr));
             }
-            bail!("wskaż jeden: --to \"nazwa\" albo --to adres");
+            bail!("{}", t(K::ErrPickOne));
         }
     }
 }
 
 /// Przeszukuje sieć i odsiewa to, z czym i tak byśmy się nie dogadali.
 fn discover(ui: &dyn Reporter) -> Result<Vec<mb_net::Peer>> {
-    ui.line("Szukam odbiorników w sieci…");
+    ui.line(t(K::SesSearching));
     let peers = mb_net::browse(DISCOVERY_WINDOW)?;
     let (ok, obce): (Vec<_>, Vec<_>) = peers.into_iter().partition(mb_net::Peer::compatible);
     for peer in obce {
-        ui.line(&format!(
-            "  pomijam „{}” — protokół w wersji {}, ja mówię {PROTOCOL_VERSION}",
-            peer.name, peer.version
+        ui.line(&mb_i18n::t3(
+            K::SesSkipping,
+            &peer.name,
+            peer.version,
+            PROTOCOL_VERSION,
         ));
     }
     Ok(ok)

@@ -123,8 +123,8 @@ fn note(slot: &Slot, action: Action) {
 /// Buduje menu i ikonę. Wołane na tym wątku, który dla danego systemu jest
 /// właściwy — w Linuksie na wątku GTK, gdzie indziej na wątku okna.
 fn build(slot: &Slot, waker: &Waker) -> Result<TrayIcon> {
-    let show = MenuItem::new("Pokaż okno", true, None);
-    let quit = MenuItem::new("Zakończ", true, None);
+    let show = MenuItem::new(mb_i18n::t(mb_i18n::Key::ShowWindow), true, None);
+    let quit = MenuItem::new(mb_i18n::t(mb_i18n::Key::Quit), true, None);
     let menu = Menu::new();
     let bad = |e: tray_icon::menu::Error| anyhow!("nie mogę zbudować menu ikony: {e}");
     menu.append(&show).map_err(bad)?;

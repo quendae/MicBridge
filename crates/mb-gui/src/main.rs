@@ -86,6 +86,12 @@ struct App {
     waker: wake::Waker,
     /// Czy okno jest schowane w zasobniku.
     hidden: bool,
+    /// Czy program się właśnie kończy.
+    ///
+    /// Prośba o zamknięcie wraca do nas klatkę później jako zwykłe zamknięcie
+    /// okna — a to chowamy do zasobnika. Bez tej pamięci program odwoływałby
+    /// własne wyjście i nie dałoby się go wyłączyć inaczej niż z zewnątrz.
+    quitting: bool,
 
     /// Nazwy sparowanych maszyn. Trzymane, bo lista siedzi w pliku, a klatek
     /// jest kilka na sekundę — czytanie go za każdym razem byłoby zaglądaniem
@@ -133,6 +139,7 @@ impl App {
             },
             waker,
             hidden: false,
+            quitting: false,
             paired: Vec::new(),
             paired_at: None,
         };
@@ -289,7 +296,7 @@ impl App {
         }
         // Chowamy się tylko tam, skąd umiemy wrócić. Gdzie indziej zamknięcie
         // znaczy to, co zwykle — lepsze niż program bez okna i bez wyjścia.
-        if self.tray.is_none() || !self.waker.can_restore() {
+        if self.quitting || self.tray.is_none() || !self.waker.can_restore() {
             return;
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -313,6 +320,7 @@ impl App {
                 false
             }
             Some(tray::Action::Quit) => {
+                self.quitting = true;
                 self.recv.stop();
                 self.send.stop();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);

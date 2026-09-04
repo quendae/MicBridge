@@ -15,6 +15,7 @@ use rand::Rng;
 use sha2::{Digest, Sha256};
 use spake2::{Ed25519Group, Identity, Password, Spake2};
 
+use mb_i18n::{t, t1, Key as K};
 use mb_proto::ControlMsg;
 
 use crate::keys::{Key, KEY_LEN};
@@ -131,14 +132,14 @@ fn verify(got: &[u8], want: &[u8]) -> Result<()> {
     if same {
         Ok(())
     } else {
-        bail!("kod się nie zgadza")
+        bail!("{}", t(K::ErrCodeMismatch))
     }
 }
 
 fn expect_handshake<S: Read>(stream: &mut S) -> Result<Vec<u8>> {
     match ControlMsg::read_from(stream)? {
         ControlMsg::Handshake { msg } => Ok(msg),
-        ControlMsg::Reject { reason } => bail!("druga strona przerwała parowanie: {reason}"),
+        ControlMsg::Reject { reason } => bail!("{}", t1(K::ErrPeerAbortedPairing, reason)),
         other => bail!("oczekiwałem kroku parowania, dostałem {other:?}"),
     }
 }
@@ -146,7 +147,7 @@ fn expect_handshake<S: Read>(stream: &mut S) -> Result<Vec<u8>> {
 fn expect_confirm<S: Read>(stream: &mut S) -> Result<Vec<u8>> {
     match ControlMsg::read_from(stream)? {
         ControlMsg::Confirm { mac } => Ok(mac),
-        ControlMsg::Reject { reason } => bail!("druga strona przerwała parowanie: {reason}"),
+        ControlMsg::Reject { reason } => bail!("{}", t1(K::ErrPeerAbortedPairing, reason)),
         other => bail!("oczekiwałem potwierdzenia, dostałem {other:?}"),
     }
 }

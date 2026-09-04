@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 mb-app = { path = "../mb-app" }
+mb-i18n = { path = "../mb-i18n" }
 mb-audio = { path = "../mb-audio" }
 mb-net = { path = "../mb-net" }
 mb-proto = { path = "../mb-proto" }

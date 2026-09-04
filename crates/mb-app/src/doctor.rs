@@ -11,6 +11,8 @@
 
 use std::fmt;
 
+use mb_i18n::{t, t1, t2, Key as K};
+
 /// Jak wypadła jedna rzecz do sprawdzenia.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Grade {
@@ -50,19 +52,6 @@ impl fmt::Display for Check {
         }
         Ok(())
     }
-}
-
-/// Polska odmiana liczebnika. „1 urządzeń” w programie, który poza tym mówi
-/// po ludzku, wygląda jak niedokończona robota.
-fn devices_count(n: usize) -> String {
-    let form = match (n % 10, n % 100) {
-        (1, 11) => "urządzeń",
-        (1, _) => "urządzenie",
-        (2..=4, 12..=14) => "urządzeń",
-        (2..=4, _) => "urządzenia",
-        _ => "urządzeń",
-    };
-    format!("{n} {form}")
 }
 
 fn ok(name: &str, detail: impl Into<String>) -> Check {
@@ -119,24 +108,23 @@ fn microphone() -> Check {
                 .map(|d| d.name.clone())
                 .unwrap_or_else(|| devices[0].name.clone());
             ok(
-                "mikrofon",
-                format!("{}, domyślne: {default}", devices_count(devices.len())),
+                t(K::DocMic),
+                t2(K::DocDefaultIs, mb_i18n::devices(devices.len()), default),
             )
         }
         Ok(_) => bad(
             // Brak mikrofonu nie przeszkadza w odbieraniu, a to bywa cała rola
             // tej maszyny — stąd ostrzeżenie, nie błąd.
             Grade::Warn,
-            "mikrofon",
-            "system nie pokazuje żadnego wejścia",
-            "Ta maszyna może tylko odbierać. Do sprawdzenia ścieżki bez \
-             mikrofonu jest `--device tone`.",
+            t(K::DocMic),
+            t(K::DocNoInput),
+            t(K::DocNoInputAdvice),
         ),
         Err(e) => bad(
             Grade::Fail,
-            "mikrofon",
-            format!("nie mogę odpytać systemu: {e}"),
-            "Sprawdź, czy działa podsystem dźwięku.",
+            t(K::DocMic),
+            t1(K::DocCannotQuery, e),
+            t(K::DocCheckAudio),
         ),
     }
 }
@@ -150,16 +138,12 @@ fn sink() -> Check {
         .arg("--version")
         .output()
     {
-        Ok(out) if out.status.success() => ok(
-            "wejście wirtualne",
-            "PipeWire działa — mikrofon „MicBridge” powstaje sam",
-        ),
+        Ok(out) if out.status.success() => ok(t(K::DocVirtualInput), t(K::DocPipewireOk)),
         _ => bad(
             Grade::Warn,
-            "wejście wirtualne",
-            "nie widzę PipeWire",
-            "Odbieranie wymaga PipeWire: `systemctl --user status pipewire \
-             wireplumber`. Na czystym PulseAudio wskaż ujście przez --sink.",
+            t(K::DocVirtualInput),
+            t(K::DocNoPipewire),
+            t(K::DocNoPipewireAdvice),
         ),
     }
 }
@@ -176,26 +160,22 @@ fn sink() -> Check {
                 .iter()
                 .find(|d| mb_audio::looks_like_virtual_cable(&d.name))
             {
-                Some(cable) => ok("wejście wirtualne", format!("{} — gotowe", cable.name)),
+                Some(cable) => ok(t(K::DocVirtualInput), t1(K::DocCableReady, &cable.name)),
                 None => bad(
                     // Bez kabla ta maszyna wciąż może wysyłać własny mikrofon,
                     // i dla wielu osób to jedyne, czego chcą.
                     Grade::Warn,
-                    "wejście wirtualne",
-                    "brak wirtualnego kabla",
-                    "Potrzebny tylko do ODBIERANIA — żeby cudzy mikrofon \
-                     pojawił się tu jako urządzenie.\n    \
-                     Zainstaluj VB-CABLE (https://vb-audio.com/Cable/) i ustaw \
-                     w nim Max Latency na 2048.\n    \
-                     Do samego wysyłania nie jest potrzebny.",
+                    t(K::DocVirtualInput),
+                    t(K::DocNoCable),
+                    t(K::DocNoCableAdvice),
                 ),
             }
         }
         Err(e) => bad(
             Grade::Fail,
-            "wejście wirtualne",
-            format!("nie mogę odpytać systemu: {e}"),
-            "Sprawdź, czy działa podsystem dźwięku.",
+            t(K::DocVirtualInput),
+            t1(K::DocCannotQuery, e),
+            t(K::DocCheckAudio),
         ),
     }
 }
@@ -208,20 +188,19 @@ fn paired() -> Check {
             if peers.is_empty() {
                 bad(
                     Grade::Warn,
-                    "parowanie",
-                    "nic jeszcze nie sparowane",
-                    "Dzieje się samo przy pierwszym połączeniu: odbiornik pokaże \
-                     kod, nadajnik o niego poprosi.",
+                    t(K::DocPairing),
+                    t(K::DocNothingPaired),
+                    t(K::DocNothingPairedAdvice),
                 )
             } else {
-                ok("parowanie", peers.join(", "))
+                ok(t(K::DocPairing), peers.join(", "))
             }
         }
         Err(e) => bad(
             Grade::Fail,
-            "parowanie",
-            format!("nie mogę odczytać kluczy: {e}"),
-            "Sprawdź prawa do katalogu konfiguracyjnego.",
+            t(K::DocPairing),
+            t1(K::DocCannotReadKeys, e),
+            t(K::DocCheckConfigDir),
         ),
     }
 }
@@ -249,17 +228,6 @@ mod tests {
 
         report.checks.push(bad(Grade::Fail, "c", "padło", "napraw"));
         assert_eq!(report.worst(), Grade::Fail, "błąd przykrywa ostrzeżenie");
-    }
-
-    #[test]
-    fn numbers_take_the_right_form() {
-        assert_eq!(devices_count(1), "1 urządzenie");
-        assert_eq!(devices_count(2), "2 urządzenia");
-        assert_eq!(devices_count(5), "5 urządzeń");
-        // Nastolatki są wyjątkiem: dwanaście urządzeń, nie dwanaście urządzenia.
-        assert_eq!(devices_count(12), "12 urządzeń");
-        assert_eq!(devices_count(22), "22 urządzenia");
-        assert_eq!(devices_count(0), "0 urządzeń");
     }
 
     #[test]

@@ -97,7 +97,8 @@ fn default_path() -> Result<PathBuf> {
     if let Ok(custom) = std::env::var("MICBRIDGE_CONFIG") {
         return Ok(PathBuf::from(custom));
     }
-    let dir = dirs::config_dir().ok_or_else(|| anyhow!("nie wiem, gdzie trzymać konfigurację"))?;
+    let dir = dirs::config_dir()
+        .ok_or_else(|| anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrNoConfigDir)))?;
     Ok(dir.join("micbridge").join("peers.toml"))
 }
 

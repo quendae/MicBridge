@@ -5,6 +5,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
+use mb_i18n::{t1, Key as K};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 
 use mb_proto::PROTOCOL_VERSION;
@@ -28,8 +29,7 @@ impl Advertiser {
     /// Ogłasza odbiornik pod nazwą maszyny na wszystkich interfejsach.
     pub fn start(port: u16) -> Result<Self> {
         let host = crate::hostname();
-        let daemon =
-            ServiceDaemon::new().map_err(|e| anyhow!("nie mogę uruchomić usługi mDNS: {e}"))?;
+        let daemon = ServiceDaemon::new().map_err(|e| anyhow!("{}", t1(K::ErrMdnsStart, e)))?;
 
         // Pusty adres plus `enable_addr_auto` znaczy „weź wszystkie adresy,
         // jakie mam, i pilnuj ich, gdy się zmienią”. Laptop przełączony z Wi-Fi
@@ -51,7 +51,7 @@ impl Advertiser {
         let fullname = info.get_fullname().to_string();
         daemon
             .register(info)
-            .map_err(|e| anyhow!("nie mogę ogłosić usługi mDNS: {e}"))?;
+            .map_err(|e| anyhow!("{}", t1(K::ErrMdnsAnnounce, e)))?;
         tracing::info!(%fullname, port, "ogłaszam się w sieci lokalnej");
 
         Ok(Self { daemon, fullname })
@@ -94,11 +94,10 @@ impl Peer {
 /// druga maszyna może odezwać się o ćwierć sekundy później, a lista, która
 /// zmienia się pod palcami, jest gorsza niż lista, na którą się chwilę czeka.
 pub fn browse(window: Duration) -> Result<Vec<Peer>> {
-    let daemon =
-        ServiceDaemon::new().map_err(|e| anyhow!("nie mogę uruchomić usługi mDNS: {e}"))?;
+    let daemon = ServiceDaemon::new().map_err(|e| anyhow!("{}", t1(K::ErrMdnsStart, e)))?;
     let rx = daemon
         .browse(SERVICE_TYPE)
-        .map_err(|e| anyhow!("nie mogę szukać w sieci: {e}"))?;
+        .map_err(|e| anyhow!("{}", t1(K::ErrMdnsBrowse, e)))?;
 
     // Klucz to pełna nazwa usługi — ta sama maszyna potrafi odpowiedzieć
     // z kilku interfejsów naraz i bez tego byłaby na liście dwa razy.

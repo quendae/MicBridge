@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+mb-i18n = { path = "../mb-i18n" }
 mb-proto = { path = "../mb-proto" }
 anyhow.workspace = true
 tracing.workspace = true

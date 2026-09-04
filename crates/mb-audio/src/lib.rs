@@ -14,6 +14,7 @@ pub mod sink;
 use anyhow::{anyhow, bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, SampleRate, StreamConfig, SupportedStreamConfig};
+use mb_i18n::{t, t1, t2, Key as K};
 
 pub use cpal::Stream;
 pub use sink::{
@@ -29,8 +30,8 @@ pub enum Direction {
 impl Direction {
     fn label(self) -> &'static str {
         match self {
-            Direction::Input => "wejściowe",
-            Direction::Output => "wyjściowe",
+            Direction::Input => t(K::ErrDirIn),
+            Direction::Output => t(K::ErrDirOut),
         }
     }
 }
@@ -96,7 +97,7 @@ pub fn find(dir: Direction, selector: &str) -> Result<Device> {
             Direction::Input => host.default_input_device(),
             Direction::Output => host.default_output_device(),
         }
-        .ok_or_else(|| anyhow!("system nie ma domyślnego urządzenia {}", dir.label()));
+        .ok_or_else(|| anyhow!("{}", t1(K::ErrNoDefault, dir.label())));
     }
 
     let devices: Vec<Device> = match dir {
@@ -115,7 +116,7 @@ pub fn find(dir: Direction, selector: &str) -> Result<Device> {
         return devices
             .into_iter()
             .nth(idx)
-            .ok_or_else(|| anyhow!("nie ma urządzenia {} o indeksie {idx}", dir.label()));
+            .ok_or_else(|| anyhow!("{}", t2(K::ErrNoDeviceIdx, dir.label(), idx)));
     }
 
     let needle = selector.to_lowercase();
@@ -166,7 +167,7 @@ fn config_for(device: &Device, dir: Direction, rate: u32) -> Result<SupportedStr
 
     if usable.is_empty() {
         let name = device.name().unwrap_or_else(|_| "<bez nazwy>".into());
-        bail!("urządzenie `{name}` nie oferuje formatu f32 ani i16");
+        bail!("{}", t1(K::ErrNoFormat, name));
     }
 
     usable.sort_by_key(|r| {

@@ -1,0 +1,18 @@
+[package]
+name = "mb-i18n"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Teksty MicBridge we wszystkich językach"
+
+[lib]
+name = "mb_i18n"
+path = "src/lib.rs"
+
+[dependencies]
+
+# Po znacznik języka ustawiony w systemie. W Linuksie i macOS wystarczą
+# zmienne środowiskowe, więc żadnej biblioteki tam nie potrzeba.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Globalization"] }

@@ -1,6 +1,7 @@
 //! Rysowanie okna: sekcje, wykresy, pola.
 
 use eframe::egui;
+use mb_i18n::{t, t1, t2, Key as K};
 
 use crate::state::{Series, Side};
 use crate::{autostart, App, Target};
@@ -27,7 +28,7 @@ impl App {
 
         if let Some((peer, code)) = shown {
             banner(ui, egui::Color32::from_rgb(60, 90, 60), |ui| {
-                ui.label(format!("„{peer}” chce się sparować. Przepisz tam ten kod:"));
+                ui.label(t1(K::PairWants, peer));
                 ui.add_space(4.0);
                 ui.label(
                     egui::RichText::new(mb_net::pair::format_code(&code))
@@ -36,7 +37,7 @@ impl App {
                         .strong(),
                 );
                 ui.add_space(4.0);
-                if ui.button("Schowaj").clicked() {
+                if ui.button(t(K::Hide)).clicked() {
                     if let Ok(mut s) = self.state.shared.lock() {
                         s.shown_code = None;
                     }
@@ -46,9 +47,7 @@ impl App {
 
         if let Some(peer) = self.state.awaiting_code() {
             banner(ui, egui::Color32::from_rgb(60, 70, 95), |ui| {
-                ui.label(format!(
-                    "„{peer}” pokazuje sześciocyfrowy kod. Przepisz go tutaj:"
-                ));
+                ui.label(t1(K::PairShows, peer));
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     let field = ui.add(
@@ -63,7 +62,7 @@ impl App {
                     let complete = digits == mb_net::pair::CODE_DIGITS;
 
                     if (ui
-                        .add_enabled(complete, egui::Button::new("Sparuj"))
+                        .add_enabled(complete, egui::Button::new(t(K::PairButton)))
                         .clicked()
                         || (entered && complete))
                         && complete
@@ -71,17 +70,14 @@ impl App {
                         self.state.answer_code(&self.code);
                         self.code.clear();
                     }
-                    if ui.button("Rezygnuję").clicked() {
+                    if ui.button(t(K::CancelButton)).clicked() {
                         self.state.cancel_code();
                         self.code.clear();
                     }
                     if digits > 0 && !complete {
                         ui.label(
-                            egui::RichText::new(format!(
-                                "{digits} z {} cyfr",
-                                mb_net::pair::CODE_DIGITS
-                            ))
-                            .weak(),
+                            egui::RichText::new(t2(K::DigitsOf, digits, mb_net::pair::CODE_DIGITS))
+                                .weak(),
                         );
                     }
                 });
@@ -91,48 +87,40 @@ impl App {
 
     pub(crate) fn recv_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let mut wanted = self.recv.is_running();
-        section(
-            ui,
-            "Odbieranie",
-            "mikrofon z drugiej maszyny trafia tutaj",
-            |ui| {
-                let text = label(wanted);
-                if ui.toggle_value(&mut wanted, text).clicked() {
-                    if wanted {
-                        self.start_recv(ctx);
-                    } else {
-                        self.recv.stop();
-                    }
+        section(ui, t(K::Receiving), t(K::ReceivingHint), |ui| {
+            let text = label(wanted);
+            if ui.toggle_value(&mut wanted, text).clicked() {
+                if wanted {
+                    self.start_recv(ctx);
+                } else {
+                    self.recv.stop();
                 }
-            },
-        );
+            }
+        });
 
         let busy = self.recv.is_running();
         ui.add_enabled_ui(!busy, |ui| {
             // Zawijane, bo w wąskim oknie ostatnie pole inaczej wychodzi poza
             // krawędź i nie ma jak go dosięgnąć.
             ui.horizontal_wrapped(|ui| {
-                ui.label("Ujście:");
+                ui.label(t(K::SinkLabel));
                 sink_picker(ui, &mut self.sink, &self.sinks);
                 ui.add_space(10.0);
-                ui.label("Bufor:");
+                ui.label(t(K::BufferLabel));
                 ui.add(
                     egui::DragValue::new(&mut self.buffer_ms)
                         .range(10..=200)
                         .suffix(" ms"),
                 );
-                ui.checkbox(&mut self.adaptive, "dopasuj do łącza")
-                    .on_hover_text(
-                        "Podnosi poduszkę, gdy pakiety się spóźniają, i opuszcza \
-                         ją po długiej spokojnej chwili.",
-                    );
-                ui.checkbox(&mut self.announce, "widoczny w sieci")
-                    .on_hover_text("Ogłaszanie przez mDNS. Bez tego druga strona podaje adres.");
+                ui.checkbox(&mut self.adaptive, t(K::AdaptBuffer))
+                    .on_hover_text(t(K::AdaptBufferHint));
+                ui.checkbox(&mut self.announce, t(K::Announce))
+                    .on_hover_text(t(K::AnnounceHint));
             });
         });
         if busy {
             ui.label(
-                egui::RichText::new("Ustawienia można zmienić po zatrzymaniu.")
+                egui::RichText::new(t(K::SettingsAfterStop))
                     .weak()
                     .size(11.0),
             );
@@ -146,39 +134,34 @@ impl App {
 
     pub(crate) fn send_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let mut wanted = self.send.is_running();
-        section(
-            ui,
-            "Wysyłanie",
-            "mój mikrofon idzie na drugą maszynę",
-            |ui| {
-                let text = label(wanted);
-                if ui.toggle_value(&mut wanted, text).clicked() {
-                    if wanted {
-                        self.start_send(ctx);
-                    } else {
-                        self.send.stop();
-                    }
+        section(ui, t(K::Sending), t(K::SendingHint), |ui| {
+            let text = label(wanted);
+            if ui.toggle_value(&mut wanted, text).clicked() {
+                if wanted {
+                    self.start_send(ctx);
+                } else {
+                    self.send.stop();
                 }
-            },
-        );
+            }
+        });
 
         let busy = self.send.is_running();
         ui.add_enabled_ui(!busy, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.label("Mikrofon:");
+                ui.label(t(K::MicrophoneLabel));
                 mic_picker(ui, &mut self.device, &self.mics);
                 if ui
-                    .button("Odśwież")
-                    .on_hover_text("Przeczytaj listę urządzeń jeszcze raz")
+                    .button(t(K::Refresh))
+                    .on_hover_text(t(K::RefreshHint))
                     .clicked()
                 {
                     self.reload_devices();
                 }
             });
             ui.horizontal_wrapped(|ui| {
-                ui.label("Do:");
+                ui.label(t(K::ToLabel));
                 self.target_picker(ui);
-                if ui.button("Szukaj").clicked() {
+                if ui.button(t(K::Search)).clicked() {
                     self.refresh_peers(true);
                 }
                 if self.peers_pending.is_some() {
@@ -196,20 +179,20 @@ impl App {
     fn target_picker(&mut self, ui: &mut egui::Ui) {
         self.refresh_peers(false);
         let current = match &self.target {
-            Target::Auto => "jedyny w sieci".to_string(),
+            Target::Auto => t(K::OnlyOnNetwork).to_string(),
             Target::Named(name) => name.clone(),
         };
         egui::ComboBox::from_id_salt("cel")
             .selected_text(current)
             .width(pick_width(ui))
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut self.target, Target::Auto, "jedyny w sieci")
-                    .on_hover_text("Połącz się z odbiornikiem, jeśli jest dokładnie jeden.");
+                ui.selectable_value(&mut self.target, Target::Auto, t(K::OnlyOnNetwork))
+                    .on_hover_text(t(K::OnlyOnNetworkHint));
                 for peer in &self.peers {
                     let text = if peer.compatible() {
                         format!("{}  ({})", peer.name, peer.addr)
                     } else {
-                        format!("{}  — inna wersja protokołu", peer.name)
+                        t1(K::OtherProtocol, &peer.name)
                     };
                     ui.add_enabled_ui(peer.compatible(), |ui| {
                         ui.selectable_value(
@@ -226,7 +209,7 @@ impl App {
             ui.add(
                 egui::TextEdit::singleline(name)
                     .desired_width(150.0)
-                    .hint_text("albo adres IP"),
+                    .hint_text(t(K::OrIpAddress)),
             );
         }
     }
@@ -235,10 +218,7 @@ impl App {
     /// i przypomnienie, z kim jest już umówiony.
     pub(crate) fn footer_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            if ui
-                .checkbox(&mut self.autostart, "uruchamiaj przy starcie systemu")
-                .changed()
-            {
+            if ui.checkbox(&mut self.autostart, t(K::Autostart)).changed() {
                 self.autostart_error = match autostart::set(self.autostart) {
                     Ok(()) => None,
                     Err(e) => {
@@ -252,7 +232,7 @@ impl App {
             if !self.paired.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        egui::RichText::new(format!("Sparowane: {}", self.paired.join(", ")))
+                        egui::RichText::new(t1(K::PairedWith, self.paired.join(", ")))
                             .weak()
                             .size(11.0),
                     );
@@ -274,9 +254,9 @@ fn pick_width(ui: &egui::Ui) -> f32 {
 
 fn label(running: bool) -> &'static str {
     if running {
-        "włączone"
+        t(K::On)
     } else {
-        "wyłączone"
+        t(K::Off)
     }
 }
 
@@ -313,7 +293,7 @@ fn status(ui: &mut egui::Ui, side: &Side, latency_unit: &str, loss_unit: &str) {
             ui.label(&side.detail);
         }
         None if side.running => {
-            ui.label(egui::RichText::new("czekam na drugą stronę").weak());
+            ui.label(egui::RichText::new(t(K::WaitingForPeer)).weak());
         }
         None => {}
     }
@@ -329,14 +309,14 @@ fn status(ui: &mut egui::Ui, side: &Side, latency_unit: &str, loss_unit: &str) {
         // jak katastrofa wypełniająca cały wykres.
         plot(
             ui,
-            "opóźnienie",
+            t(K::LatencyPlot),
             &side.latency,
             latency_unit,
             LATENCY,
             50.0,
             0,
         );
-        plot(ui, "straty", &side.loss, loss_unit, LOSS, 2.0, 1);
+        plot(ui, t(K::LossPlot), &side.loss, loss_unit, LOSS, 2.0, 1);
     });
 
     ui.add_space(4.0);
@@ -356,7 +336,7 @@ fn show_log(ui: &mut egui::Ui, side: &Side) {
         return;
     }
     ui.add_space(4.0);
-    egui::CollapsingHeader::new("Szczegóły")
+    egui::CollapsingHeader::new(t(K::Details))
         .id_salt(format!("log{}", side.log.len()))
         .default_open(false)
         .show(ui, |ui| {
@@ -436,10 +416,7 @@ fn sink_picker(ui: &mut egui::Ui, current: &mut String, sinks: &[String]) {
         .width(pick_width(ui))
         .show_ui(ui, |ui| {
             ui.selectable_value(current, "auto".into(), pretty_sink("auto"))
-                .on_hover_text(
-                    "W Linuksie tworzy mikrofon „MicBridge”; w Windows szuka \
-                     wirtualnego kabla wśród wyjść.",
-                );
+                .on_hover_text(t(K::SinkAutoHint));
             for name in sinks {
                 ui.selectable_value(current, name.clone(), name);
             }
@@ -448,8 +425,8 @@ fn sink_picker(ui: &mut egui::Ui, current: &mut String, sinks: &[String]) {
 
 fn pretty_sink(value: &str) -> String {
     match value {
-        "auto" if cfg!(target_os = "linux") => "automatycznie (mikrofon MicBridge)".into(),
-        "auto" => "automatycznie (wirtualny kabel)".into(),
+        "auto" if cfg!(target_os = "linux") => t(K::SinkAutoLinux).into(),
+        "auto" => t(K::SinkAutoWindows).into(),
         other => other.to_string(),
     }
 }
@@ -457,18 +434,18 @@ fn pretty_sink(value: &str) -> String {
 fn mic_picker(ui: &mut egui::Ui, current: &mut String, mics: &[String]) {
     egui::ComboBox::from_id_salt("mikrofon")
         .selected_text(match current.as_str() {
-            "default" => "domyślny w systemie".to_string(),
-            "tone" => "ton próbny 440 Hz".to_string(),
+            "default" => t(K::DefaultDevice).to_string(),
+            "tone" => t(K::TestTone).to_string(),
             other => other.to_string(),
         })
         .width(pick_width(ui))
         .show_ui(ui, |ui| {
-            ui.selectable_value(current, "default".into(), "domyślny w systemie");
+            ui.selectable_value(current, "default".into(), t(K::DefaultDevice));
             for name in mics {
                 ui.selectable_value(current, name.clone(), name);
             }
             ui.separator();
-            ui.selectable_value(current, "tone".into(), "ton próbny 440 Hz")
-                .on_hover_text("Sprawdza całą ścieżkę bez mikrofonu.");
+            ui.selectable_value(current, "tone".into(), t(K::TestTone))
+                .on_hover_text(t(K::TestToneHint));
         });
 }
