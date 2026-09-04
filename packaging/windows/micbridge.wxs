@@ -131,14 +131,17 @@
           Domyślna treść zakłada, że kabel jest, a akcja niżej podmienia ją, gdy
           go nie ma. Odwrotnie się nie da: na jedną właściwość przypada jedna
           akcja ustawiająca, więc dwa warianty warunkowe zderzają się nazwami.
+
+          Krótko, bo instalator tnie ten tekst na 255 znakach. Całe wyjaśnienie
+          jest w `micbridge doctor` i w README.
         -->
         <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT"
-                  Value="Gotowe. VB-CABLE jest już w systemie, więc ten komputer może i wysyłać, i odbierać.&#13;&#10;&#13;&#10;Sprawdzenie konfiguracji: micbridge doctor" />
+                  Value="VB-CABLE jest w systemie — ten komputer może i wysyłać, i odbierać. Sprawdzenie: micbridge doctor" />
 
         <SetProperty Id="WIXUI_EXITDIALOGOPTIONALTEXT"
                      After="CostFinalize"
                      Sequence="ui"
-                     Value="Gotowe. Ten komputer może wysyłać swój mikrofon na inne maszyny.&#13;&#10;&#13;&#10;Nie wykryto VB-CABLE. Jest potrzebny tylko wtedy, gdy MicBridge ma tutaj ODBIERAĆ cudzy mikrofon i pokazać go aplikacjom jako urządzenie wejściowe — Windows nie pozwala programowi utworzyć mikrofonu bez podpisanego sterownika. Pobierz go z https://vb-audio.com/Cable/ i ustaw w nim Max Latency na 2048.&#13;&#10;&#13;&#10;Sprawdzenie w dowolnej chwili: micbridge doctor">
+                     Value="Ten komputer może wysyłać swój mikrofon. Do ODBIERANIA cudzego potrzebny jest jeszcze VB-CABLE (https://vb-audio.com/Cable/) — Windows nie pozwala programowi utworzyć mikrofonu. Szczegóły: micbridge doctor">
             NOT VBCABLEMME AND NOT VBCABLEWDM AND NOT VBCABLEUNINST
         </SetProperty>
 

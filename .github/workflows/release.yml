@@ -126,7 +126,10 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          candle.exe -nologo `
+          # -arch x64 oznacza komponenty jako 64-bitowe. Bez tego instalator
+          # odmawia złożenia: pliki 32-bitowe w katalogu Program Files dla
+          # programów 64-bitowych to sprzeczność, którą sprawdza kontrola ICE80.
+          candle.exe -nologo -arch x64 `
             -dVersion="${{ steps.wersja.outputs.version }}" `
             -dTargetDir="$PWD\target\release" `
             -dIconDir="$PWD\packaging\icons" `
