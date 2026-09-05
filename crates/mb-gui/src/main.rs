@@ -330,6 +330,9 @@ impl App {
                 self.quitting = true;
                 self.recv.stop();
                 self.send.stop();
+                // Sesja czekająca na przepisanie kodu stoi na zmiennej
+                // warunkowej, nie na gnieździe — flaga sama jej nie ruszy.
+                self.state.cancel_code();
                 // Ikona znika od razu, razem z oknem — bo to jedyne, co po
                 // programie widać, a między tą klatką a końcem procesu sesje
                 // mają jeszcze chwilę na rozejście się.

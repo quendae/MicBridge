@@ -218,3 +218,45 @@ pub fn recv_secure<R: Read>(stream: &mut R, channel: &Mutex<SecureChannel>) -> R
     };
     ch.open(&body)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::interrupt::Control;
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    /// Ktoś się łączy i milczy — skaner portów, przerwane parowanie, maszyna,
+    /// która czeka, aż człowiek przepisze kod. Uzgodnienie stoi wtedy na
+    /// odczycie, a zatrzymanie sesji musi je z tego wyjąć; inaczej wątek
+    /// zostaje na zawsze i blokuje zamknięcie programu.
+    #[test]
+    fn stopping_gives_up_on_a_silent_peer() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Klient żyje do końca testu: zamknięty zerwałby połączenie i odczyt
+        // skończyłby się sam, czyli sprawdzalibyśmy nie to, co trzeba.
+        let _client = TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+
+        let running = Arc::new(AtomicBool::new(true));
+        let mut control = Control::adopt(server, Arc::clone(&running)).unwrap();
+        let pairing = Mutex::new(Pairing::new());
+
+        let theirs = Arc::clone(&running);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            theirs.store(false, Ordering::Relaxed);
+        });
+
+        let start = Instant::now();
+        assert!(accept(&mut control, &pairing, &crate::ui::Console).is_err());
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "uzgodnienie trzymało sesję {:?}",
+            start.elapsed()
+        );
+    }
+}

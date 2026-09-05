@@ -8,7 +8,7 @@
 //! poza tym.
 
 use std::io::Write;
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
+use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -194,13 +194,21 @@ pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Resul
     let mut encoder = OpusEncoder::new(bitrate)?;
 
     // 2. Uzgodnienie po TCP.
-    let mut control = TcpStream::connect(control_addr)
+    // Limit czasu na samo połączenie i na każdy późniejszy odczyt: uzgodnienie
+    // potrafi stać, aż ktoś przepisze kod parowania, a wyłączanie programu nie
+    // może na to czekać. Patrz `interrupt`.
+    let mut control = crate::interrupt::Control::connect(control_addr, Arc::clone(&running))
         .with_context(|| format!("nie mogę połączyć się z {control_addr}"))?;
-    control.set_nodelay(true)?;
 
     // Od tego miejsca kanał jest zaszyfrowany. Uzgodnienie może po drodze
     // poprosić o kod parowania.
-    let channel = Arc::new(Mutex::new(establish(&mut control, ui)?));
+    let channel = match establish(&mut control, ui) {
+        Ok(channel) => Arc::new(Mutex::new(channel)),
+        // Zatrzymanie w trakcie uzgodnienia to nie błąd sesji, tylko jej
+        // koniec — okno nie ma po co pokazywać czerwonego napisu.
+        Err(_) if !running.load(Ordering::Relaxed) => return Ok(()),
+        Err(e) => return Err(e),
+    };
 
     send_secure(
         &mut control,
@@ -216,10 +224,12 @@ pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Resul
         }),
     )?;
 
-    let accept = match recv_secure(&mut control, &channel)? {
-        ControlMsg::Accept(a) => a,
-        ControlMsg::Reject { reason } => bail!("{}", t1(K::ErrRejected, reason)),
-        other => bail!("nieoczekiwana odpowiedź na HELLO: {other:?}"),
+    let accept = match recv_secure(&mut control, &channel) {
+        Ok(ControlMsg::Accept(a)) => a,
+        Ok(ControlMsg::Reject { reason }) => bail!("{}", t1(K::ErrRejected, reason)),
+        Ok(other) => bail!("nieoczekiwana odpowiedź na HELLO: {other:?}"),
+        Err(_) if !running.load(Ordering::Relaxed) => return Ok(()),
+        Err(e) => return Err(e),
     };
     let cipher = mb_net::MediaCipher::new(&accept.media_key)?;
     if accept.version != PROTOCOL_VERSION {

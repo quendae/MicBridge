@@ -6,6 +6,7 @@
 //! sesja nie wie i nie musi wiedzieć, która z nich patrzy.
 
 pub mod doctor;
+pub mod interrupt;
 pub mod pair;
 pub mod recv;
 pub mod send;

@@ -156,8 +156,12 @@ pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Resul
                     adaptive: opts.adaptive,
                 };
                 if let Err(e) = session(control, &cfg, &running, &pairing, ui) {
-                    tracing::error!(error = %e, "sesja zakończona błędem");
-                    ui.line(&t1(K::SesEnded, e));
+                    // Zatrzymanie przerywa czytanie z gniazda i wraca tędy.
+                    // To nie awaria, tylko wyjście — nie ma o czym meldować.
+                    if running.load(Ordering::Relaxed) {
+                        tracing::error!(error = %e, "sesja zakończona błędem");
+                        ui.line(&t1(K::SesEnded, e));
+                    }
                 }
                 if !running.load(Ordering::Relaxed) {
                     break;
@@ -178,17 +182,17 @@ struct SessionConfig<'a> {
 }
 
 fn session(
-    mut control: TcpStream,
+    control: TcpStream,
     cfg: &SessionConfig,
     running: &Arc<AtomicBool>,
     pairing: &Mutex<crate::pair::Pairing>,
     ui: &dyn Reporter,
 ) -> Result<()> {
+    // Kanał sterujący czyta z limitem czasu i ogląda się na flagę: bez tego
+    // maszyna, która się połączyła i zamilkła, trzymałaby sesję w nieskończo-
+    // ność — a z nią całe wyłączanie programu. Patrz `interrupt`.
+    let mut control = crate::interrupt::Control::adopt(control, Arc::clone(running))?;
     let peer = control.peer_addr()?;
-    // Gniazdo dziedziczy tryb nieblokujący po nasłuchu, a sesja czyta wprost
-    // ze strumienia i oczekuje, że odczyt poczeka na dane.
-    control.set_nonblocking(false)?;
-    control.set_nodelay(true)?;
     tracing::info!(%peer, "połączenie przychodzące");
 
     // Rozpoznanie i ewentualne parowanie idą jawnie; wszystko dalej już nie.
