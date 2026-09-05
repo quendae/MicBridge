@@ -283,6 +283,11 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.recv.stop();
         self.send.stop();
+        // Ikona musi zejść z zasobnika, zanim proces zniknie. Windows nie
+        // sprząta po programie, który się nie pożegnał — zostawia obrazek,
+        // który wygląda jak działający program, a nie odpowiada na nic,
+        // dopóki ktoś nie najedzie na niego myszą.
+        self.tray = None;
     }
 }
 
@@ -325,6 +330,10 @@ impl App {
                 self.quitting = true;
                 self.recv.stop();
                 self.send.stop();
+                // Ikona znika od razu, razem z oknem — bo to jedyne, co po
+                // programie widać, a między tą klatką a końcem procesu sesje
+                // mają jeszcze chwilę na rozejście się.
+                self.tray = None;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 true
             }

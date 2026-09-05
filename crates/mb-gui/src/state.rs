@@ -128,7 +128,7 @@ pub struct State {
 pub type Handle = Arc<State>;
 
 /// Meldunki jednej strony trafiają w jedno miejsce w [`Shared`].
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Which {
     Recv,
     Send,
