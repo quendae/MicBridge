@@ -115,6 +115,13 @@ and your application picks `CABLE Output` as its microphone. Afterwards, open
 default of 7168 adds about 130 ms, more than the rest of the chain put
 together.
 
+The origin of VB-CABLE is [www.vb-cable.com](https://vb-audio.com/Cable/) —
+it's a VB-Audio application, separate from MicBridge and under its own
+licence. MicBridge doesn't install or bundle it; you get it directly from
+VB-Audio and set it up yourself before MicBridge ever touches it. VB-CABLE is
+donationware, and all participations are welcome — if it's useful to you
+beyond MicBridge, VB-Audio's site has a donation link.
+
 ## Language
 
 MicBridge speaks Polish, English, German, Spanish, French, Italian and
