@@ -17,7 +17,7 @@ source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 # Suma archiwum z wydania — dopisywana zaraz po otagowaniu, bo wcześniej nie
 # ma czego liczyc. AUR odradza SKIP wszedzie poza zrodlami z systemu kontroli
 # wersji: bez sumy makepkg zbuduje wszystko, co akurat przyjdzie spod adresu.
-sha256sums=('ffa1aa39d007590376838d592905820a0dd3312437b1f25aa23ab6c6a4342085')
+sha256sums=('203e4617d3785186ccb8b7f8d968ff5f28fb62743a6ba0e227f5999ed55eceb8')
 
 prepare() {
 	cd "MicBridge-$pkgver"
