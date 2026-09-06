@@ -66,6 +66,12 @@ struct App {
     // Ustawienia wysyłania.
     device: String,
     target: Target,
+    /// Czy użytkownik sam ruszył pole „Do:".
+    ///
+    /// Póki nie ruszył, wyszukiwanie ma prawo wpisać tam to, co znalazło.
+    /// Potem już nie: podmienianie komuś wyboru pod palcami co dziesięć
+    /// sekund byłoby gorsze od braku podpowiedzi.
+    target_touched: bool,
 
     /// Wpisywany kod parowania.
     code: String,
@@ -125,6 +131,7 @@ impl App {
             announce: true,
             device: "default".into(),
             target: Target::Auto,
+            target_touched: false,
             code: String::new(),
             autostart: autostart::enabled(),
             footer_error: None,
@@ -205,6 +212,29 @@ impl App {
         });
     }
 
+    /// Wpisuje znalezioną maszynę do „Do:", dopóki nikt nie wybrał czego innego.
+    ///
+    /// Bez tego jedynym śladem, że wyszukiwanie w ogóle coś dało, było
+    /// rozwinięcie listy: zamknięty wybór pokazywał „jedyny w sieci"
+    /// niezależnie od tego, czy w sieci ktoś był, czy nie było nikogo.
+    ///
+    /// Tylko przy jednym znalezionym. Przy kilku wybór należy do użytkownika
+    /// — podstawienie pierwszego z brzegu byłoby zgadywaniem, a nadajnik
+    /// poszedłby wtedy do kogoś innego, niż ktokolwiek prosił.
+    fn autofill_target(&mut self) {
+        if self.target_touched || self.target != Target::Auto {
+            return;
+        }
+        let name = {
+            let mut usable = self.peers.iter().filter(|p| p.compatible());
+            match (usable.next(), usable.next()) {
+                (Some(only), None) => only.name.clone(),
+                _ => return,
+            }
+        };
+        self.target = Target::Named(name);
+    }
+
     fn collect_peers(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.peers_pending else {
             return;
@@ -214,6 +244,7 @@ impl App {
                 self.peers = found;
                 self.peers_refreshed = Some(Instant::now());
                 self.peers_pending = None;
+                self.autofill_target();
                 ctx.request_repaint();
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -274,6 +305,14 @@ impl eframe::App for App {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.heading("MicBridge");
+                // Wersja stoi przy nazwie, bo najczęściej szuka się jej wtedy,
+                // gdy dwie maszyny nie chcą ze sobą gadać — a wtedy pierwsze
+                // pytanie brzmi, czy obie są na tym samym.
+                ui.label(
+                    egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
+                        .weak()
+                        .size(13.0),
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(egui::RichText::new(mb_net::hostname()).weak().size(13.0));
                 });

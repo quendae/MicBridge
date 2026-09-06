@@ -201,8 +201,16 @@ impl App {
                 if ui.button(t(K::Search)).clicked() {
                     self.refresh_peers(true);
                 }
+                // Wynik szukania musi być widać bez rozwijania listy — inaczej
+                // „nic nie znaleziono” i „znalazłem trzy” wyglądają tak samo.
                 if self.peers_pending.is_some() {
                     ui.spinner();
+                } else if self.peers_refreshed.is_some() {
+                    let text = match self.peers.len() {
+                        0 => t(K::FoundNone).to_string(),
+                        n => t1(K::FoundN, n),
+                    };
+                    ui.label(egui::RichText::new(text).weak().size(11.0));
                 }
             });
         });
@@ -215,6 +223,9 @@ impl App {
 
     fn target_picker(&mut self, ui: &mut egui::Ui) {
         self.refresh_peers(false);
+        // Cokolwiek się tu zmieni, zmieni to użytkownik: podpowiedź
+        // z wyszukiwania wpada gdzie indziej, przy odbiorze wyników.
+        let before = self.target.clone();
         let current = match &self.target {
             Target::Auto => t(K::OnlyOnNetwork).to_string(),
             Target::Named(name) => name.clone(),
@@ -248,6 +259,10 @@ impl App {
                     .desired_width(150.0)
                     .hint_text(t(K::OrIpAddress)),
             );
+        }
+
+        if self.target != before {
+            self.target_touched = true;
         }
     }
 
