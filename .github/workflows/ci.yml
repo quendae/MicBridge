@@ -82,3 +82,36 @@ jobs:
 
       - name: Build release
         run: cargo build --workspace --release
+
+  # Suma archiwum w PKGBUILD jest przypinana ręcznie po wystawieniu tagu, bo
+  # wcześniej nie ma czego liczyć. Dotąd nikt jej nie sprawdzał: krok
+  # `makepkg --printsrcinfo` w przepisie na paczki tylko parsuje plik i źródła
+  # nie pobiera, więc suma z poprzedniego wydania przechodziła na zielono.
+  # Skoro świadomie nie ma tu `SKIP`, to musi być co ją weryfikuje.
+  suma-pkgbuild:
+    name: suma archiwum w PKGBUILD
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Porównaj z archiwum wydania
+        run: |
+          set -euo pipefail
+          pkgver=$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)
+          chce=$(sed -n "s/^sha256sums=('\(.*\)')/\1/p" packaging/arch/PKGBUILD)
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/v${pkgver}.tar.gz"
+
+          # Między podbiciem wersji a wystawieniem tagu archiwum jeszcze nie
+          # istnieje. To normalny stan gałęzi, nie usterka.
+          if ! curl -fsSL -o archiwum.tar.gz "$url"; then
+            echo "::notice::tagu v${pkgver} jeszcze nie ma — nie ma czego sprawdzać"
+            exit 0
+          fi
+
+          mam=$(sha256sum archiwum.tar.gz | cut -d' ' -f1)
+          if [ "$mam" != "$chce" ]; then
+            echo "::error::PKGBUILD podaje sumę ${chce}, a archiwum v${pkgver} ma ${mam}"
+            exit 1
+          fi
+          echo "suma zgadza się z archiwum v${pkgver}"

@@ -88,6 +88,10 @@ jobs:
         with:
           name: srcinfo
           path: packaging/arch/.SRCINFO
+          # Nazwa zaczyna się od kropki, a upload-artifact od wersji 4.4
+          # domyślnie takie pomija — artefakt wychodził pusty, z ostrzeżeniem
+          # „No files were found”, którego nikt nie czytał.
+          include-hidden-files: true
 
   windows:
     name: MSI
