@@ -173,5 +173,11 @@ jobs:
       - name: Doklej do wydania
         uses: softprops/action-gh-release@v2
         with:
-          files: paczki/**/*
+          # Wymienione z nazwy, nie `paczki/**/*`: do wydania mają iść rzeczy
+          # do zainstalowania. `.SRCINFO` jest dla AUR-a, gdzie trafia przez
+          # repozytorium pakietu, a nie stąd — doklejał się do wydania tylko
+          # dlatego, że leżał w tym samym katalogu.
+          files: |
+            paczki/linux/*
+            paczki/windows/*
           generate_release_notes: true
