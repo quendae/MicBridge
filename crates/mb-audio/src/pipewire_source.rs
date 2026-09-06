@@ -58,7 +58,10 @@ impl VirtualSource {
                     tracing::error!(error = %e, "pętla PipeWire zakończona błędem");
                 }
             })
-            .map_err(|e| anyhow!("nie mogę uruchomić wątku PipeWire: {e}"))?;
+            .map_err(|e| {
+                tracing::error!(error = %e, "wątek PipeWire");
+                anyhow!("{}", mb_i18n::t1(mb_i18n::Key::ErrPipewire, e))
+            })?;
 
         match ready_rx.recv() {
             Ok(Ok(())) => {
@@ -112,10 +115,14 @@ where
 {
     pw::init();
 
-    let mainloop = pw::main_loop::MainLoopRc::new(None)
-        .map_err(|e| anyhow!("nie mogę utworzyć pętli PipeWire: {e}"))?;
-    let context = pw::context::ContextRc::new(&mainloop, None)
-        .map_err(|e| anyhow!("nie mogę utworzyć kontekstu PipeWire: {e}"))?;
+    let mainloop = pw::main_loop::MainLoopRc::new(None).map_err(|e| {
+        tracing::error!(error = %e, "pętla PipeWire");
+        anyhow!("{}", mb_i18n::t1(mb_i18n::Key::ErrPipewire, e))
+    })?;
+    let context = pw::context::ContextRc::new(&mainloop, None).map_err(|e| {
+        tracing::error!(error = %e, "kontekst PipeWire");
+        anyhow!("{}", mb_i18n::t1(mb_i18n::Key::ErrPipewire, e))
+    })?;
     let core = context
         .connect_rc(None)
         .map_err(|e| anyhow!("{}", mb_i18n::t1(mb_i18n::Key::ErrPipewireConnect, e)))?;
@@ -145,7 +152,10 @@ where
             *pw::keys::NODE_RATE => "1/48000",
         },
     )
-    .map_err(|e| anyhow!("nie mogę utworzyć strumienia: {e}"))?;
+    .map_err(|e| {
+        tracing::error!(error = %e, "tworzenie strumienia");
+        anyhow!("{}", mb_i18n::t1(mb_i18n::Key::ErrPipewire, e))
+    })?;
 
     // Bufor roboczy trzymany przez callback: rośnie najwyżej raz, przy
     // pierwszym większym kwancie. W ścieżce czasu rzeczywistego nie alokujemy.
@@ -199,7 +209,10 @@ where
             *chunk.size_mut() = (written * STRIDE) as _;
         })
         .register()
-        .map_err(|e| anyhow!("nie mogę zarejestrować nasłuchu strumienia: {e}"))?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "nasłuch strumienia");
+            anyhow!("{}", mb_i18n::t1(mb_i18n::Key::ErrPipewire, e))
+        })?;
 
     let mut audio_info = spa::param::audio::AudioInfoRaw::new();
     audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
@@ -214,11 +227,17 @@ where
             properties: audio_info.into(),
         }),
     )
-    .map_err(|e| anyhow!("nie mogę zserializować formatu: {e}"))?
+    .map_err(|e| {
+        tracing::error!(error = %e, "serializacja formatu");
+        anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+    })?
     .0
     .into_inner();
 
-    let mut params = [Pod::from_bytes(&values).ok_or_else(|| anyhow!("zły POD formatu"))?];
+    let mut params = [Pod::from_bytes(&values).ok_or_else(|| {
+        tracing::error!("zły POD formatu");
+        anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+    })?];
 
     stream
         .connect(
@@ -231,7 +250,10 @@ where
                 | pw::stream::StreamFlags::RT_PROCESS,
             &mut params,
         )
-        .map_err(|e| anyhow!("nie mogę podłączyć strumienia: {e}"))?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "podłączenie strumienia");
+            anyhow!("{}", mb_i18n::t1(mb_i18n::Key::ErrPipewire, e))
+        })?;
 
     // Od tego miejsca węzeł istnieje i aplikacje mogą go wybrać.
     let _ = ready.try_send(Ok(()));

@@ -112,7 +112,7 @@ pub fn find(dir: Direction, selector: &str) -> Result<Device> {
     if let Some(rest) = selector.strip_prefix('@') {
         let idx: usize = rest
             .parse()
-            .with_context(|| format!("`{selector}` nie jest indeksem urządzenia"))?;
+            .with_context(|| mb_i18n::t1(mb_i18n::Key::ErrNotDeviceIndex, selector))?;
         return devices
             .into_iter()
             .nth(idx)
@@ -248,7 +248,10 @@ where
     let stream = match format {
         SampleFormat::F32 => build!(f32, |s: f32| s),
         SampleFormat::I16 => build!(i16, |s: i16| s as f32 / 32768.0),
-        other => bail!("nieobsługiwany format próbek: {other:?}"),
+        other => {
+            tracing::error!(?other, "nieobsługiwany format próbek");
+            bail!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+        }
     };
 
     stream.play()?;
@@ -312,7 +315,10 @@ where
     let stream = match format {
         SampleFormat::F32 => build!(f32, |s: f32| s),
         SampleFormat::I16 => build!(i16, |s: f32| (s.clamp(-1.0, 1.0) * 32767.0) as i16),
-        other => bail!("nieobsługiwany format próbek: {other:?}"),
+        other => {
+            tracing::error!(?other, "nieobsługiwany format próbek");
+            bail!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+        }
     };
 
     stream.play()?;

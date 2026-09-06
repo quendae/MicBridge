@@ -37,8 +37,11 @@ impl VariableResampler {
             oversampling_factor: 128,
             window: WindowFunction::BlackmanHarris2,
         };
-        let inner = SincFixedIn::<f32>::new(base_ratio, MAX_RELATIVE, params, chunk, 1)
-            .context("nie mogę utworzyć resamplera")?;
+        let inner =
+            SincFixedIn::<f32>::new(base_ratio, MAX_RELATIVE, params, chunk, 1).map_err(|e| {
+                tracing::error!(error = %e, "tworzenie resamplera");
+                anyhow::anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+            })?;
         let out_max = inner.output_frames_max();
         Ok(Self {
             inner,
@@ -68,7 +71,10 @@ impl VariableResampler {
         }
         self.inner
             .set_resample_ratio(self.base_ratio * (1.0 + correction), true)
-            .context("nie mogę zmienić współczynnika resamplera")?;
+            .map_err(|e| {
+                tracing::error!(error = %e, "zmiana współczynnika resamplera");
+                anyhow::anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+            })?;
         self.applied_correction = correction;
         Ok(())
     }

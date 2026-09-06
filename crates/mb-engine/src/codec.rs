@@ -9,7 +9,7 @@
 //! of just reporting a hole: Opus embeds a reduced copy of frame N inside
 //! frame N+1, and recovering from it costs one frame of latency, not a gap.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use opus::{Application, Channels, Decoder, Encoder};
 
 use mb_proto::{FRAME_SAMPLES, SAMPLE_RATE};
@@ -27,8 +27,11 @@ impl OpusEncoder {
     /// `bitrate` in bits per second. 24 kbps is transparent for speech at
     /// 48 kHz mono and leaves headroom for FEC to be worth sending.
     pub fn new(bitrate: u32) -> Result<Self> {
-        let mut inner = Encoder::new(SAMPLE_RATE, Channels::Mono, Application::Voip)
-            .context("nie mogę utworzyć kodera Opus")?;
+        let mut inner =
+            Encoder::new(SAMPLE_RATE, Channels::Mono, Application::Voip).map_err(|e| {
+                tracing::error!(error = %e, "tworzenie kodera Opus");
+                anyhow::anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+            })?;
         inner.set_bitrate(opus::Bitrate::Bits(bitrate as i32))?;
         // FEC is useless unless the encoder believes packets go missing, so a
         // non-zero starting estimate matters; STATS refines it from reality.
@@ -59,10 +62,10 @@ impl OpusEncoder {
     }
 
     pub fn encode(&mut self, pcm: &[i16]) -> Result<&[u8]> {
-        let n = self
-            .inner
-            .encode(pcm, &mut self.packet)
-            .context("kodowanie Opus")?;
+        let n = self.inner.encode(pcm, &mut self.packet).map_err(|e| {
+            tracing::error!(error = %e, "kodowanie Opus");
+            anyhow::anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+        })?;
         Ok(&self.packet[..n])
     }
 }
@@ -74,8 +77,10 @@ pub struct OpusDecoder {
 impl OpusDecoder {
     pub fn new() -> Result<Self> {
         Ok(Self {
-            inner: Decoder::new(SAMPLE_RATE, Channels::Mono)
-                .context("nie mogę utworzyć dekodera Opus")?,
+            inner: Decoder::new(SAMPLE_RATE, Channels::Mono).map_err(|e| {
+                tracing::error!(error = %e, "tworzenie dekodera Opus");
+                anyhow::anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+            })?,
         })
     }
 

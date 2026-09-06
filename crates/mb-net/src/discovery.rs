@@ -45,7 +45,10 @@ impl Advertiser {
                 (TXT_HOST, host.as_str()),
             ][..],
         )
-        .map_err(|e| anyhow!("złe dane usługi mDNS: {e}"))?
+        .map_err(|e| {
+            tracing::error!(error = %e, "złe dane usługi mDNS");
+            anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+        })?
         .enable_addr_auto();
 
         let fullname = info.get_fullname().to_string();

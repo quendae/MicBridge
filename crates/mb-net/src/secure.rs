@@ -44,9 +44,10 @@ pub struct SecureChannel {
 impl SecureChannel {
     /// Strona nadająca zaczyna uzgodnienie.
     pub fn initiator<S: Read + Write>(stream: &mut S, psk: &Key) -> Result<Self> {
-        let mut noise = builder(psk)?
-            .build_initiator()
-            .map_err(|e| anyhow!("nie mogę zacząć uzgodnienia: {e}"))?;
+        let mut noise = builder(psk)?.build_initiator().map_err(|e| {
+            tracing::error!(error = %e, "start uzgodnienia Noise");
+            anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+        })?;
 
         let mut buf = vec![0u8; MAX_NOISE_MSG];
         let n = noise
@@ -61,17 +62,19 @@ impl SecureChannel {
         noise.read_message(&theirs, &mut buf).map_err(wrong_key)?;
 
         Ok(Self {
-            noise: noise
-                .into_transport_mode()
-                .map_err(|e| anyhow!("uzgodnienie nie doszło do końca: {e}"))?,
+            noise: noise.into_transport_mode().map_err(|e| {
+                tracing::error!(error = %e, "uzgodnienie Noise przerwane");
+                anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+            })?,
         })
     }
 
     /// Strona odbierająca odpowiada.
     pub fn responder<S: Read + Write>(stream: &mut S, psk: &Key) -> Result<Self> {
-        let mut noise = builder(psk)?
-            .build_responder()
-            .map_err(|e| anyhow!("nie mogę zacząć uzgodnienia: {e}"))?;
+        let mut noise = builder(psk)?.build_responder().map_err(|e| {
+            tracing::error!(error = %e, "start uzgodnienia Noise");
+            anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+        })?;
 
         let mut buf = vec![0u8; MAX_NOISE_MSG];
         let theirs = expect_handshake(stream)?;
@@ -86,9 +89,10 @@ impl SecureChannel {
         .write_to(stream)?;
 
         Ok(Self {
-            noise: noise
-                .into_transport_mode()
-                .map_err(|e| anyhow!("uzgodnienie nie doszło do końca: {e}"))?,
+            noise: noise.into_transport_mode().map_err(|e| {
+                tracing::error!(error = %e, "uzgodnienie Noise przerwane");
+                anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+            })?,
         })
     }
 
@@ -97,7 +101,8 @@ impl SecureChannel {
         let mut plain = Vec::new();
         ciborium::into_writer(msg, &mut plain).map_err(|e| anyhow!("kodowanie: {e}"))?;
         if plain.len() > MAX_PLAIN {
-            bail!("wiadomość sterująca ma {} bajtów, za dużo", plain.len());
+            tracing::error!(bajtow = plain.len(), "wiadomość sterująca za duża");
+            bail!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal));
         }
         let mut out = vec![0u8; plain.len() + MEDIA_TAG_LEN];
         let n = self
@@ -111,22 +116,24 @@ impl SecureChannel {
     /// Odwrotność `seal`.
     pub fn open(&mut self, frame: &[u8]) -> Result<ControlMsg> {
         let mut plain = vec![0u8; MAX_NOISE_MSG];
-        let n = self
-            .noise
-            .read_message(frame, &mut plain)
-            .map_err(|e| anyhow!("nie mogę odszyfrować wiadomości: {e}"))?;
+        let n = self.noise.read_message(frame, &mut plain).map_err(|e| {
+            tracing::error!(error = %e, "odszyfrowanie wiadomości sterującej");
+            anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+        })?;
         ciborium::from_reader(&plain[..n]).map_err(|e| anyhow!("dekodowanie: {e}"))
     }
 }
 
 fn builder(psk: &Key) -> Result<snow::Builder<'_>> {
-    snow::Builder::new(
-        NOISE_PARAMS
-            .parse()
-            .map_err(|e| anyhow!("zły opis Noise: {e}"))?,
-    )
+    snow::Builder::new(NOISE_PARAMS.parse().map_err(|e| {
+        tracing::error!(error = %e, "zły opis Noise");
+        anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+    })?)
     .psk(0, psk)
-    .map_err(|e| anyhow!("zły klucz sesji: {e}"))
+    .map_err(|e| {
+        tracing::error!(error = %e, "zły klucz sesji");
+        anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+    })
 }
 
 /// Uzgodnienie z niepasującym sekretem wygląda jak uszkodzone dane — bez tego
@@ -144,7 +151,10 @@ fn expect_handshake<S: Read>(stream: &mut S) -> Result<Vec<u8>> {
         ControlMsg::Reject { reason } => {
             bail!("{}", mb_i18n::t1(mb_i18n::Key::ErrPeerAborted, reason))
         }
-        other => bail!("oczekiwałem uzgodnienia, dostałem {other:?}"),
+        other => {
+            tracing::error!(?other, "oczekiwałem uzgodnienia");
+            bail!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+        }
     }
 }
 
@@ -159,7 +169,12 @@ pub struct MediaCipher {
 impl MediaCipher {
     pub fn new(key: &[u8]) -> Result<Self> {
         if key.len() != KEY_LEN {
-            bail!("klucz mediów ma {} bajtów zamiast {KEY_LEN}", key.len());
+            tracing::error!(
+                bajtow = key.len(),
+                oczekiwano = KEY_LEN,
+                "zły rozmiar klucza mediów"
+            );
+            bail!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal));
         }
         Ok(Self {
             aead: ChaCha20Poly1305::new(key.into()),
@@ -176,7 +191,10 @@ impl MediaCipher {
                     aad: header,
                 },
             )
-            .map_err(|_| anyhow!("nie mogę zaszyfrować pakietu"))
+            .map_err(|_| {
+                tracing::error!("nie mogę zaszyfrować pakietu");
+                anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+            })
     }
 
     /// Zwraca odszyfrowany ładunek albo błąd, jeśli pakiet nie jest nasz.
@@ -189,7 +207,10 @@ impl MediaCipher {
                     aad: header,
                 },
             )
-            .map_err(|_| anyhow!("pakiet nie przeszedł uwierzytelnienia"))
+            .map_err(|_| {
+                tracing::error!("pakiet nie przeszedł uwierzytelnienia");
+                anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+            })
     }
 }
 

@@ -288,7 +288,7 @@ impl Reporter for GuiReporter {
 }
 
 fn zajety<E>(_: E) -> anyhow::Error {
-    anyhow::anyhow!("stan współdzielony zajęty")
+    anyhow::anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
 }
 
 impl State {

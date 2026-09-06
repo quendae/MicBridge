@@ -59,9 +59,10 @@ pub fn initiator<S: Read + Write>(stream: &mut S, code: &str) -> Result<Key> {
     ControlMsg::Handshake { msg: mine }.write_to(stream)?;
 
     let theirs = expect_handshake(stream)?;
-    let shared = state
-        .finish(&theirs)
-        .map_err(|e| anyhow!("wymiana kluczy się nie powiodła: {e:?}"))?;
+    let shared = state.finish(&theirs).map_err(|e| {
+        tracing::error!(error = ?e, "wymiana kluczy SPAKE2");
+        anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+    })?;
     let key = derive(&shared);
 
     // Nadajnik potwierdza pierwszy: odbiornik ma prawo zamknąć połączenie
@@ -87,9 +88,10 @@ pub fn responder<S: Read + Write>(stream: &mut S, code: &str) -> Result<Key> {
     );
     ControlMsg::Handshake { msg: mine }.write_to(stream)?;
 
-    let shared = state
-        .finish(&theirs)
-        .map_err(|e| anyhow!("wymiana kluczy się nie powiodła: {e:?}"))?;
+    let shared = state.finish(&theirs).map_err(|e| {
+        tracing::error!(error = ?e, "wymiana kluczy SPAKE2");
+        anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+    })?;
     let key = derive(&shared);
 
     let theirs = expect_confirm(stream)?;
@@ -140,7 +142,10 @@ fn expect_handshake<S: Read>(stream: &mut S) -> Result<Vec<u8>> {
     match ControlMsg::read_from(stream)? {
         ControlMsg::Handshake { msg } => Ok(msg),
         ControlMsg::Reject { reason } => bail!("{}", t1(K::ErrPeerAbortedPairing, reason)),
-        other => bail!("oczekiwałem kroku parowania, dostałem {other:?}"),
+        other => {
+            tracing::error!(?other, "oczekiwałem kroku parowania");
+            bail!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+        }
     }
 }
 
@@ -148,7 +153,10 @@ fn expect_confirm<S: Read>(stream: &mut S) -> Result<Vec<u8>> {
     match ControlMsg::read_from(stream)? {
         ControlMsg::Confirm { mac } => Ok(mac),
         ControlMsg::Reject { reason } => bail!("{}", t1(K::ErrPeerAbortedPairing, reason)),
-        other => bail!("oczekiwałem potwierdzenia, dostałem {other:?}"),
+        other => {
+            tracing::error!(?other, "oczekiwałem potwierdzenia");
+            bail!("{}", mb_i18n::t(mb_i18n::Key::ErrInternal))
+        }
     }
 }
 

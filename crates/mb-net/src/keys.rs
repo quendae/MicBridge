@@ -10,6 +10,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use mb_i18n::{t1, t2, Key as K};
+
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
@@ -36,9 +38,9 @@ impl KeyStore {
         let path = default_path()?;
         let store = match std::fs::read(&path) {
             Ok(bytes) => toml::from_str(&String::from_utf8_lossy(&bytes))
-                .with_context(|| format!("nie rozumiem {}", path.display()))?,
+                .with_context(|| t1(K::ErrKeysParse, path.display()))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Store::default(),
-            Err(e) => return Err(anyhow!("nie mogę odczytać {}: {e}", path.display())),
+            Err(e) => return Err(anyhow!("{}", t2(K::ErrKeysRead, path.display(), e))),
         };
         Ok(Self { path, store })
     }
@@ -72,17 +74,15 @@ impl KeyStore {
 
     fn save(&self) -> Result<()> {
         if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("nie mogę utworzyć {}", dir.display()))?;
+            std::fs::create_dir_all(dir).with_context(|| t1(K::ErrKeysWrite, dir.display()))?;
         }
         let text = toml::to_string_pretty(&self.store).map_err(|e| anyhow!("zapis kluczy: {e}"))?;
         // Zapis przez plik tymczasowy: przerwany zapis nie może zostawić
         // magazynu w połowie i skasować działających parowań.
         let tmp = self.path.with_extension("tmp");
-        std::fs::write(&tmp, text)
-            .with_context(|| format!("nie mogę zapisać {}", tmp.display()))?;
+        std::fs::write(&tmp, text).with_context(|| t1(K::ErrKeysWrite, tmp.display()))?;
         std::fs::rename(&tmp, &self.path)
-            .with_context(|| format!("nie mogę zapisać {}", self.path.display()))?;
+            .with_context(|| t1(K::ErrKeysWrite, self.path.display()))?;
         restrict(&self.path);
         Ok(())
     }
@@ -91,6 +91,15 @@ impl KeyStore {
 /// Nazwy maszyn bywają pisane raz tak, raz siak — klucz ma się znaleźć i wtedy.
 fn normalize(peer: &str) -> String {
     peer.trim().to_lowercase()
+}
+
+/// Katalog, w którym program trzyma swoje rzeczy: klucze, wybór języka,
+/// dziennik. Jedno miejsce, żeby nie trzeba było szukać po systemie.
+pub fn config_dir() -> Result<PathBuf> {
+    Ok(default_path()?
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default())
 }
 
 fn default_path() -> Result<PathBuf> {

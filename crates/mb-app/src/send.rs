@@ -226,7 +226,10 @@ pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Resul
     let accept = match recv_secure(&mut control, &channel) {
         Ok(ControlMsg::Accept(a)) => a,
         Ok(ControlMsg::Reject { reason }) => bail!("{}", t1(K::ErrRejected, reason)),
-        Ok(other) => bail!("nieoczekiwana odpowiedź na HELLO: {other:?}"),
+        Ok(other) => {
+            tracing::error!(?other, "nieoczekiwana odpowiedź na HELLO");
+            bail!("{}", t(K::ErrInternal))
+        }
         Err(_) if !running.load(Ordering::Relaxed) => return Ok(()),
         Err(e) => return Err(e),
     };
@@ -461,7 +464,7 @@ fn resolve(target: &str, default_port: u16) -> Result<Vec<SocketAddr>> {
     // oba, a pod jednym z nich potrafi nikogo nie być.
     let addrs: Vec<SocketAddr> = with_port
         .to_socket_addrs()
-        .with_context(|| format!("nie umiem rozwiązać adresu `{target}`"))?
+        .with_context(|| t1(K::ErrResolve, target))?
         .collect();
     if addrs.is_empty() {
         bail!("{}", t1(K::ErrTargetNothing, target));

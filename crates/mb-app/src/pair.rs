@@ -13,6 +13,8 @@ use std::sync::Mutex;
 
 use anyhow::{bail, Result};
 
+use mb_i18n::{t, t1, Key as K};
+
 use crate::ui::Reporter;
 use mb_net::{KeyStore, SecureChannel};
 use mb_proto::{read_frame, write_frame, ControlMsg, Init, PROTOCOL_VERSION};
@@ -75,7 +77,10 @@ pub fn establish<S: Read + Write>(stream: &mut S, ui: &dyn Reporter) -> Result<S
         ControlMsg::Reject { reason } => {
             bail!("{}", mb_i18n::t1(mb_i18n::Key::ErrRejected, reason))
         }
-        other => bail!("nieoczekiwana odpowiedź na przedstawienie się: {other:?}"),
+        other => {
+            tracing::error!(?other, "nieoczekiwana odpowiedź na przedstawienie się");
+            bail!("{}", t(K::ErrInternal))
+        }
     };
 
     let mut store = KeyStore::open()?;
@@ -90,7 +95,9 @@ pub fn establish<S: Read + Write>(stream: &mut S, ui: &dyn Reporter) -> Result<S
             let key = mb_net::pair::initiator(stream, &code)?;
             store.set(&peer, &key)?;
             ui.line(&format!(
-                "Sparowano z „{peer}”. Następnym razem pójdzie bez kodu."
+                "{} {}",
+                t1(K::SesPairedWith, &peer),
+                t(K::SesPairedNext)
             ));
             key
         }
@@ -109,7 +116,10 @@ pub fn accept<S: Read + Write>(
 ) -> Result<(SecureChannel, String)> {
     let init = match ControlMsg::read_from(stream)? {
         ControlMsg::Init(i) => i,
-        other => bail!("oczekiwałem przedstawienia się, dostałem {other:?}"),
+        other => {
+            tracing::error!(?other, "oczekiwałem przedstawienia się");
+            bail!("{}", t(K::ErrInternal))
+        }
     };
     if init.version != PROTOCOL_VERSION {
         let reason = format!(
@@ -133,13 +143,17 @@ pub fn accept<S: Read + Write>(
 
     let needed = match ControlMsg::read_from(stream)? {
         ControlMsg::Pairing { needed } => needed,
-        other => bail!("oczekiwałem decyzji o parowaniu, dostałem {other:?}"),
+        other => {
+            tracing::error!(?other, "oczekiwałem decyzji o parowaniu");
+            bail!("{}", t(K::ErrInternal))
+        }
     };
 
     let key = if needed {
         let code = {
             let Ok(p) = pairing.lock() else {
-                bail!("stan parowania niedostępny")
+                tracing::error!("zamek stanu parowania zatruty");
+                bail!("{}", t(K::ErrInternal))
             };
             p.code()
         };
@@ -151,7 +165,7 @@ pub fn accept<S: Read + Write>(
                     p.note_success();
                 }
                 store.set(&init.host, &key)?;
-                ui.line(&format!("  Sparowano z „{}”.", init.host));
+                ui.line(&format!("  {}", t1(K::SesPairedWith, &init.host)));
                 key
             }
             Err(e) => {
@@ -160,7 +174,7 @@ pub fn accept<S: Read + Write>(
                     Err(_) => false,
                 };
                 if fresh {
-                    ui.line("  trzy nieudane próby — losuję nowy kod.");
+                    ui.line(&format!("  {}", t(K::SesThreeMisses)));
                 }
                 let _ = ControlMsg::Reject {
                     reason: "parowanie odrzucone".into(),
@@ -202,7 +216,8 @@ pub fn send_secure<W: Write>(
 ) -> Result<()> {
     let body = {
         let Ok(mut ch) = channel.lock() else {
-            bail!("kanał sterujący niedostępny")
+            tracing::error!("zamek kanału sterującego zatruty");
+            bail!("{}", t(K::ErrInternal))
         };
         ch.seal(msg)?
     };
@@ -214,7 +229,8 @@ pub fn send_secure<W: Write>(
 pub fn recv_secure<R: Read>(stream: &mut R, channel: &Mutex<SecureChannel>) -> Result<ControlMsg> {
     let body = read_frame(stream)?;
     let Ok(mut ch) = channel.lock() else {
-        bail!("kanał sterujący niedostępny")
+        tracing::error!("zamek kanału sterującego zatruty");
+        bail!("{}", t(K::ErrInternal))
     };
     ch.open(&body)
 }

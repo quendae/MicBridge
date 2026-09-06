@@ -24,7 +24,7 @@ pub fn set(on: bool) -> Result<()> {
 }
 
 fn exe() -> Result<std::path::PathBuf> {
-    std::env::current_exe().context("nie wiem, gdzie leży mój własny plik")
+    std::env::current_exe().context(mb_i18n::t(mb_i18n::Key::ErrOwnPath))
 }
 
 #[cfg(windows)]
@@ -51,7 +51,7 @@ mod imp {
             .args(["add", KEY, "/v", ENTRY, "/t", "REG_SZ", "/d", &value, "/f"])
             .output()?;
         if !out.status.success() {
-            anyhow::bail!("nie mogę zapisać wpisu autostartu w rejestrze");
+            anyhow::bail!("{}", mb_i18n::t(mb_i18n::Key::ErrAutostartWrite));
         }
         Ok(())
     }
@@ -83,8 +83,8 @@ mod imp {
                 return Ok(PathBuf::from(dir));
             }
         }
-        let home =
-            std::env::var("HOME").map_err(|_| anyhow::anyhow!("nie znam katalogu domowego"))?;
+        let home = std::env::var("HOME")
+            .map_err(|_| anyhow::anyhow!("{}", mb_i18n::t(mb_i18n::Key::ErrNoHome)))?;
         Ok(PathBuf::from(home).join(".config"))
     }
 

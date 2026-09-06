@@ -285,6 +285,27 @@ impl App {
             self.language_ui(ui);
         });
 
+        // Własny wiersz, nie doklejka do poprzedniego: nazwa języka bywa
+        // znacznie dłuższa niż „Polski” i wtedy jedno wchodziło na drugie.
+        //
+        // Ścieżka, a nie przycisk „otwórz”: dziennik czyta się wtedy, gdy coś
+        // nie działa, a wtedy warto móc go komuś podać, nie tylko obejrzeć.
+        // Etykieta jest do zaznaczenia i skopiowania.
+        if let Some(log) = &self.log {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new(t(K::LogFile)).weak().size(10.0));
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(log.display().to_string())
+                            .weak()
+                            .size(10.0),
+                    )
+                    .selectable(true),
+                )
+                .on_hover_text(t(K::LogHint));
+            });
+        }
+
         if let Some(e) = &self.footer_error {
             ui.colored_label(LOSS, e);
         }

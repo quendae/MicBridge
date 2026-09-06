@@ -171,6 +171,12 @@ of them, and that is the whole of the identity check.
 | The two machines cannot find each other | Some Wi-Fi routers block multicast between clients. Give the address directly: `send --to 192.168.1.40` |
 | They connect, never ask for a code, and the session dies on the handshake | One side is holding a key the other no longer has. **Pair again** next to the name in the window, or `micbridge forget <name>` — one side is enough. |
 
+The window keeps a log next to the pairing keys — `micbridge.log`, with the
+full path spelled out along the bottom edge. It starts fresh on every run, so
+what it holds is the session that just went wrong rather than everything since
+the install. Messages that only mean "there is a bug in the program" say so in
+one sentence on screen and leave the particulars there.
+
 `--device tone` sends a 440 Hz sine instead of a microphone, which exercises
 the whole path — framing, network, buffer, sink — on a machine that has no
 microphone at all.

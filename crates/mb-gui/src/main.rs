@@ -27,14 +27,11 @@ use state::{Handle, State, Which};
 /// Jak często odświeżamy listę maszyn widocznych w sieci.
 const REFRESH_PEERS: Duration = Duration::from_secs(10);
 
+/// Jak nazywa się dziennik i gdzie leży.
+const LOG_NAME: &str = "micbridge.log";
+
 fn main() -> eframe::Result {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "mb_gui=info,mb_app=info,mb_audio=info,mb_net=info".into()),
-        )
-        .with_target(false)
-        .init();
+    let log = start_logging();
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -48,8 +45,59 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "MicBridge",
         options,
-        Box::new(|cc| Ok(Box::new(App::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(App::new(cc, log)))),
     )
+}
+
+/// Kieruje dziennik do pliku obok kluczy i zwraca jego ścieżkę.
+///
+/// Okno nie ma konsoli — w Windows odcina ją `windows_subsystem`, a w Linuksie
+/// program uruchomiony z menu nie ma dokąd pisać. Wszystko, co program mówił
+/// o sobie po drodze, przepadało więc dokładnie w tych przypadkach, w których
+/// było potrzebne. Bez pliku nie ma sensu odsyłać nikogo „do dziennika”.
+///
+/// Plik zaczyna się od nowa przy każdym uruchomieniu: interesuje nas ten
+/// przebieg, w którym coś nie zadziałało, a nie wszystkie od instalacji.
+/// Gdy pliku nie da się otworzyć, zostaje standardowe wyjście — lepsze to
+/// niż program, który nie startuje przez dziennik.
+fn start_logging() -> Option<std::path::PathBuf> {
+    // Pierwsza nazwa to nazwa binarki, nie skrzynki: `[[bin]] name` brzmi
+    // „micbridge-gui”, więc tracing widzi cel `micbridge_gui`. Stało tu
+    // „mb_gui” i przez to własne wpisy okna — te o braku ikony w zasobniku
+    // czy o nieudanym autostarcie — nie przechodziły przez filtr wcale.
+    let filter = || {
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+            "micbridge_gui=info,mb_app=info,mb_audio=info,mb_engine=info,mb_net=info".into()
+        })
+    };
+
+    let path = mb_net::config_dir().ok().map(|dir| dir.join(LOG_NAME));
+    if let Some(path) = &path {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let opened = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path);
+        if let Ok(file) = opened {
+            tracing_subscriber::fmt()
+                .with_env_filter(filter())
+                .with_target(false)
+                .with_ansi(false)
+                .with_writer(move || file.try_clone().expect("uchwyt dziennika"))
+                .init();
+            tracing::info!(dziennik = %path.display(), "start");
+            return Some(path.clone());
+        }
+    }
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter())
+        .with_target(false)
+        .init();
+    None
 }
 
 struct App {
@@ -107,6 +155,10 @@ struct App {
     /// na dysk bez powodu.
     paired: Vec<String>,
     paired_at: Option<Instant>,
+
+    /// Gdzie leży dziennik. `None`, gdy nie dało się go otworzyć i wszystko
+    /// idzie na standardowe wyjście.
+    pub(crate) log: Option<std::path::PathBuf>,
 }
 
 /// Do kogo nadajemy.
@@ -119,7 +171,7 @@ enum Target {
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, log: Option<std::path::PathBuf>) -> Self {
         let waker = wake::Waker::new(cc);
         let mut app = Self {
             state: Arc::new(State::default()),
@@ -152,6 +204,7 @@ impl App {
             quitting: false,
             paired: Vec::new(),
             paired_at: None,
+            log,
         };
         app.reload_devices();
         app.refresh_paired(true);

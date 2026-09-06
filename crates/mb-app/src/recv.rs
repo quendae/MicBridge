@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Context, Result};
-use mb_i18n::{t, t1, t2, Key as K};
+use mb_i18n::{t, t1, t2, t3, Key as K};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 
@@ -92,7 +92,7 @@ pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Resul
     let listen_addr: SocketAddr = opts
         .listen
         .parse()
-        .with_context(|| format!("`{}` nie jest adresem nasłuchu", opts.listen))?;
+        .with_context(|| t1(K::ErrNotListenAddr, &opts.listen))?;
 
     mb_audio::sink::validate(&opts.sink)?;
 
@@ -126,13 +126,13 @@ pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Resul
         None
     };
     ui.line(&format!(
-        "Bufor jitter: {} ms ({target_frames} × {FRAME_MS} ms){}.",
-        opts.buffer_ms,
-        if opts.adaptive {
-            ", adaptacyjny"
+        "{}{}.",
+        t3(K::SesJitter, opts.buffer_ms, target_frames, FRAME_MS),
+        t(if opts.adaptive {
+            K::SesAdaptive
         } else {
-            ", stały"
-        }
+            K::SesFixed
+        })
     ));
 
     // Kod parowania żyje tak długo jak proces, nie jak połączenie: użytkownik
@@ -256,7 +256,10 @@ fn session(
 
     let hello = match crate::pair::recv_secure(&mut control, &channel)? {
         ControlMsg::Hello(h) => h,
-        other => bail!("oczekiwałem HELLO, dostałem {other:?}"),
+        other => {
+            tracing::error!(?other, "oczekiwałem HELLO");
+            bail!("{}", t(K::ErrInternal))
+        }
     };
 
     if let Err(reason) = check(&hello) {
@@ -321,7 +324,7 @@ fn session(
     };
     let media = UdpSocket::bind(SocketAddr::new(local_ip, MEDIA_PORT))
         .or_else(|_| UdpSocket::bind(SocketAddr::new(any, MEDIA_PORT)))
-        .with_context(|| format!("nie mogę zająć portu UDP {MEDIA_PORT}"))?;
+        .with_context(|| t1(K::ErrUdpPort, MEDIA_PORT))?;
     media.set_read_timeout(Some(Duration::from_millis(200)))?;
     let ssrc = fresh_ssrc();
 
