@@ -52,6 +52,11 @@ else's at the same time.
 digits, the sending machine asks you to type them in. That is the only manual
 step there ever is; from then on the two find each other on their own.
 
+If a machine ever loses its keys — a reinstalled system, a replaced computer —
+the window lists what is paired and puts **Pair again** next to each name.
+Doing it on one side is enough: the next connection asks for a fresh code. On
+the command line that is `micbridge forget <name>`.
+
 Both halves show **latency and loss**, as numbers and as a two-minute graph.
 The sender cannot measure latency by itself, so it displays the figure the
 receiver reports — both ends look at the same number.
@@ -164,6 +169,7 @@ of them, and that is the whole of the identity check.
 | Crackling, `UNDERRUN` in the log | Raise the cushion: `recv --buffer-ms 60` |
 | The sender cannot see the microphone | `micbridge devices`, then `--device "<part of the name>"` |
 | The two machines cannot find each other | Some Wi-Fi routers block multicast between clients. Give the address directly: `send --to 192.168.1.40` |
+| They connect, never ask for a code, and the session dies on the handshake | One side is holding a key the other no longer has. **Pair again** next to the name in the window, or `micbridge forget <name>` — one side is enough. |
 
 `--device tone` sends a 440 Hz sine instead of a microphone, which exercises
 the whole path — framing, network, buffer, sink — on a machine that has no

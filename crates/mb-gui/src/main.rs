@@ -70,8 +70,9 @@ struct App {
     /// Wpisywany kod parowania.
     code: String,
     autostart: bool,
-    /// Ostatnie niepowodzenie z paska na dole — autostart albo zapis języka.
-    /// Jedno miejsce wystarczy: naraz i tak wychodzi najwyżej jedno.
+    /// Ostatnie niepowodzenie z paska na dole — autostart, zapis języka albo
+    /// zapomnienie parowania. Jedno miejsce wystarczy: naraz i tak wychodzi
+    /// najwyżej jedno.
     footer_error: Option<String>,
 
     sinks: Vec<String>,
@@ -162,6 +163,22 @@ impl App {
         self.paired = mb_net::KeyStore::open()
             .map(|store| store.peers().map(str::to_owned).collect())
             .unwrap_or_default();
+    }
+
+    /// Zapomina klucz jednej maszyny, żeby dało się sparować od nowa.
+    ///
+    /// Wystarczy po jednej stronie: druga dowie się o tym przy najbliższym
+    /// połączeniu — bo o parowaniu decyduje to, czy *któraś* ze stron klucza
+    /// nie ma, a nie to, czy nie mają go obie.
+    fn forget_peer(&mut self, peer: &str) {
+        self.footer_error = match mb_net::KeyStore::open().and_then(|mut s| s.forget(peer)) {
+            Ok(_) => None,
+            Err(e) => {
+                tracing::warn!(peer, error = %e, "nie mogę zapomnieć parowania");
+                Some(format!("{e}"))
+            }
+        };
+        self.refresh_paired(true);
     }
 
     fn reload_devices(&mut self) {

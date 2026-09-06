@@ -66,7 +66,6 @@ OnlyOnNetworkHint: "Połącz się z odbiornikiem, jeśli jest dokładnie jeden."
 OtherProtocol: "{}  — inna wersja protokołu", "{}  — different protocol version", "{}  — andere Protokollversion", "{}  — otra versión del protocolo", "{}  — version de protocole différente", "{}  — versione di protocollo diversa", "{}  — інша версія протоколу";
 OrIpAddress: "albo adres IP", "or an IP address", "oder eine IP-Adresse", "o una dirección IP", "ou une adresse IP", "oppure un indirizzo IP", "або IP-адреса";
 Autostart: "uruchamiaj przy starcie systemu", "start with the system", "mit dem System starten", "iniciar con el sistema", "démarrer avec le système", "avvia con il sistema", "запускати разом із системою";
-PairedWith: "Sparowane: {}", "Paired: {}", "Gekoppelt: {}", "Emparejado: {}", "Appairé : {}", "Associato: {}", "Спаровано: {}";
 WaitingForPeer: "czekam na drugą stronę", "waiting for the other side", "warte auf die Gegenseite", "esperando al otro extremo", "en attente de l’autre côté", "in attesa dell’altro lato", "чекаю на іншу сторону";
 LatencyPlot: "opóźnienie", "latency", "Verzögerung", "latencia", "latence", "latenza", "затримка";
 LossPlot: "straty", "loss", "Verluste", "pérdidas", "pertes", "perdite", "втрати";
@@ -81,6 +80,9 @@ TestToneHint: "Sprawdza całą ścieżkę bez mikrofonu.", "Tests the whole path
 // --- parowanie --------------------------------------------------------------
 PairWants: "„{}” chce się sparować. Przepisz tam ten kod:", "“{}” wants to pair. Type this code there:", "„{}“ möchte sich koppeln. Gib dort diesen Code ein:", "«{}» quiere emparejarse. Escribe allí este código:", "« {} » veut s’appairer. Saisissez ce code là-bas :", "«{}» vuole associarsi. Digita là questo codice:", "«{}» хоче спаруватися. Введіть там цей код:";
 PairShows: "„{}” pokazuje sześciocyfrowy kod. Przepisz go tutaj:", "“{}” is showing a six-digit code. Type it here:", "„{}“ zeigt einen sechsstelligen Code. Gib ihn hier ein:", "«{}» muestra un código de seis dígitos. Escríbelo aquí:", "« {} » affiche un code à six chiffres. Saisissez-le ici :", "«{}» mostra un codice di sei cifre. Digitalo qui:", "«{}» показує шестизначний код. Введіть його тут:";
+PairedHeading: "Sparowane maszyny:", "Paired machines:", "Gekoppelte Maschinen:", "Máquinas emparejadas:", "Machines appairées :", "Macchine associate:", "Спаровані машини:";
+PairAgain: "Sparuj od nowa", "Pair again", "Neu koppeln", "Emparejar de nuevo", "Réappairer", "Associa di nuovo", "Спарувати заново";
+PairAgainHint: "Zapomina klucz tej maszyny. Następne połączenie poprosi o nowy kod — wystarczy zrobić to po jednej stronie.", "Forgets this machine's key. The next connection will ask for a new code — doing it on one side is enough.", "Vergisst den Schlüssel dieser Maschine. Die nächste Verbindung fragt nach einem neuen Code — auf einer Seite genügt es.", "Olvida la clave de esta máquina. La próxima conexión pedirá un código nuevo: basta con hacerlo en un lado.", "Oublie la clé de cette machine. La prochaine connexion demandera un nouveau code — le faire d’un seul côté suffit.", "Dimentica la chiave di questa macchina. La prossima connessione chiederà un nuovo codice: basta farlo da un lato.", "Забуває ключ цієї машини. Наступне з’єднання попросить новий код — достатньо зробити це з одного боку.";
 Hide: "Schowaj", "Hide", "Ausblenden", "Ocultar", "Masquer", "Nascondi", "Сховати";
 PairButton: "Sparuj", "Pair", "Koppeln", "Emparejar", "Appairer", "Associa", "Спарувати";
 CancelButton: "Rezygnuję", "Cancel", "Abbrechen", "Cancelar", "Annuler", "Annulla", "Скасувати";

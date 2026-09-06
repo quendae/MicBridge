@@ -83,6 +83,43 @@ impl App {
                 });
             });
         }
+
+        self.paired_ui(ui);
+    }
+
+    /// Maszyny, z którymi jesteśmy sparowani — i jedyna droga, żeby parowanie
+    /// powtórzyć.
+    ///
+    /// Klucz zapisuje się raz i od tej pory obie strony łączą się po cichu.
+    /// To dobrze do momentu, w którym jedna z nich klucz traci: po
+    /// przeinstalowaniu systemu, po przeniesieniu na inny komputer. Wtedy
+    /// dwie maszyny potrafią uważać się za sparowane, a kluczy do siebie nie
+    /// mieć — i bez tego przycisku nie było jak z tego wyjść inaczej niż
+    /// `micbridge forget` w terminalu, o którym w oknie nie ma ani słowa.
+    fn paired_ui(&mut self, ui: &mut egui::Ui) {
+        if self.paired.is_empty() {
+            return;
+        }
+        // Kopia, bo zapomnienie zmienia listę w trakcie jej wypisywania.
+        let peers = self.paired.clone();
+        let mut forget = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(t(K::PairedHeading)).weak().size(11.0));
+            for peer in &peers {
+                ui.label(egui::RichText::new(peer).size(11.0));
+                if ui
+                    .small_button(t(K::PairAgain))
+                    .on_hover_text(t(K::PairAgainHint))
+                    .clicked()
+                {
+                    forget = Some(peer.clone());
+                }
+                ui.add_space(6.0);
+            }
+        });
+        if let Some(peer) = forget {
+            self.forget_peer(&peer);
+        }
     }
 
     pub(crate) fn recv_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -231,16 +268,6 @@ impl App {
 
             ui.add_space(12.0);
             self.language_ui(ui);
-
-            if !self.paired.is_empty() {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new(t1(K::PairedWith, self.paired.join(", ")))
-                            .weak()
-                            .size(11.0),
-                    );
-                });
-            }
         });
 
         if let Some(e) = &self.footer_error {
