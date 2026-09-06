@@ -1,6 +1,6 @@
 # Maintainer: quendae <qnd.000@gmail.com>
 pkgname=micbridge
-pkgver=0.1.1
+pkgver=0.1.2
 pkgrel=1
 pkgdesc="Przenosi mikrofon z jednego komputera na drugi po sieci lokalnej"
 arch=('x86_64')
