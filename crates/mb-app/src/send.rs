@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use mb_i18n::{t, t1, t2, Key as K};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
@@ -141,8 +141,8 @@ impl Default for Options {
 
 pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Result<()> {
     let (device, bitrate, drop_pct) = (opts.device.as_str(), opts.bitrate, opts.drop_pct);
-    let control_addr = match opts.to.as_deref() {
-        Some(target) => target_addr(target, ui)?,
+    let (target_name, control_addrs) = match opts.to.as_deref() {
+        Some(target) => (target.to_string(), target_addr(target, ui)?),
         None => sole_peer(ui)?,
     };
     let gain = 10f32.powf(opts.gain_db / 20.0);
@@ -197,8 +197,7 @@ pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Resul
     // Limit czasu na samo połączenie i na każdy późniejszy odczyt: uzgodnienie
     // potrafi stać, aż ktoś przepisze kod parowania, a wyłączanie programu nie
     // może na to czekać. Patrz `interrupt`.
-    let mut control = crate::interrupt::Control::connect(control_addr, Arc::clone(&running))
-        .with_context(|| format!("nie mogę połączyć się z {control_addr}"))?;
+    let mut control = connect_any(&target_name, &control_addrs, &running)?;
 
     // Od tego miejsca kanał jest zaszyfrowany. Uzgodnienie może po drodze
     // poprosić o kod parowania.
@@ -239,7 +238,9 @@ pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Resul
         );
     }
 
-    let media_addr = SocketAddr::new(control_addr.ip(), accept.media_port);
+    // Media idą tam, dokąd faktycznie doszło sterowanie — a niekoniecznie pod
+    // pierwszy adres z listy, bo ten mógł nie odpowiedzieć.
+    let media_addr = SocketAddr::new(control.peer_addr()?.ip(), accept.media_port);
     tracing::info!(
         host = %accept.host,
         sink = %accept.sink,
@@ -416,19 +417,56 @@ pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Resul
     Ok(())
 }
 
+/// Próbuje po kolei wszystkich adresów, jakie maszyna o sobie ogłosiła.
+///
+/// Maszyna z IPv4 i IPv6 ogłasza oba, a druga strona bywa, że widzi tylko
+/// jeden z nich. Dopóki próbowaliśmy wyłącznie najlepiej ocenionego, jeden
+/// adres nie do użycia zamykał całą drogę — mimo że obok leżał działający.
+///
+/// Gdy nie wychodzi żaden, mówimy o wszystkich naraz. Sam ostatni błąd
+/// wskazywałby adres, którego użytkownik nawet nie wybierał, i kazałby zgadywać,
+/// czy pozostałe w ogóle były próbowane.
+fn connect_any(
+    name: &str,
+    addrs: &[SocketAddr],
+    running: &Arc<AtomicBool>,
+) -> Result<crate::interrupt::Control> {
+    let mut whys = Vec::new();
+    for addr in addrs {
+        match crate::interrupt::Control::connect(*addr, Arc::clone(running)) {
+            Ok(control) => {
+                if !whys.is_empty() {
+                    tracing::info!(%addr, "połączyłem się dopiero pod kolejnym adresem");
+                }
+                return Ok(control);
+            }
+            Err(e) => {
+                tracing::debug!(%addr, error = %e, "adres nie odpowiada");
+                whys.push(format!("{addr} ({e})"));
+            }
+        }
+    }
+    bail!("{}", t2(K::ErrCannotConnect, name, whys.join(", ")));
+}
+
 /// `host` albo `host:port`; bez portu dokleja domyślny.
-fn resolve(target: &str, default_port: u16) -> Result<SocketAddr> {
+fn resolve(target: &str, default_port: u16) -> Result<Vec<SocketAddr>> {
     let with_port = if has_port(target) {
         target.to_string()
     } else {
         format!("{target}:{default_port}")
     };
 
-    with_port
+    // Wszystkie, nie pierwszy z brzegu: nazwa z IPv4 i IPv6 rozwiązuje się na
+    // oba, a pod jednym z nich potrafi nikogo nie być.
+    let addrs: Vec<SocketAddr> = with_port
         .to_socket_addrs()
         .with_context(|| format!("nie umiem rozwiązać adresu `{target}`"))?
-        .next()
-        .ok_or_else(|| anyhow!("{}", t1(K::ErrTargetNothing, target)))
+        .collect();
+    if addrs.is_empty() {
+        bail!("{}", t1(K::ErrTargetNothing, target));
+    }
+    Ok(addrs)
 }
 
 /// Rozstrzyga, czy użytkownik podał port.
@@ -448,13 +486,13 @@ fn has_port(target: &str) -> bool {
 /// Najpierw jako adres, bo tak jest bez czekania. Dopiero gdy to nie wyjdzie,
 /// szukamy w sieci maszyny o takiej nazwie — `--to salon` ma działać tak samo
 /// jak `--to 192.168.1.40`, skoro nazwę widać na liście z `discover`.
-fn target_addr(target: &str, ui: &dyn Reporter) -> Result<SocketAddr> {
+fn target_addr(target: &str, ui: &dyn Reporter) -> Result<Vec<SocketAddr>> {
     match resolve(target, CONTROL_PORT) {
-        Ok(addr) => Ok(addr),
+        Ok(addrs) => Ok(addrs),
         Err(e) => match peer_by_name(target, ui)? {
             Some(peer) => {
-                ui.line(&t2(K::SesPeerIs, &peer.name, peer.addr));
-                Ok(peer.addr)
+                ui.line(&t2(K::SesPeerIs, &peer.name, peer.addr()));
+                Ok(peer.addrs)
             }
             None => Err(e),
         },
@@ -469,19 +507,19 @@ fn peer_by_name(fragment: &str, ui: &dyn Reporter) -> Result<Option<mb_net::Peer
 }
 
 /// Znajduje jedyny odbiornik w sieci albo tłumaczy, czego brakuje.
-fn sole_peer(ui: &dyn Reporter) -> Result<SocketAddr> {
+fn sole_peer(ui: &dyn Reporter) -> Result<(String, Vec<SocketAddr>)> {
     let peers = discover(ui)?;
     match peers.len() {
         0 => bail!("{}", t(K::ErrNoReceiver)),
         1 => {
             let peer = peers.into_iter().next().expect("jeden jest");
-            ui.line(&t2(K::SesFound, &peer.name, peer.addr));
-            Ok(peer.addr)
+            ui.line(&t2(K::SesFound, &peer.name, peer.addr()));
+            Ok((peer.name, peer.addrs))
         }
         _ => {
             ui.line(t(K::SesSeveral));
             for peer in &peers {
-                ui.line(&format!("  {:<24} {}", peer.name, peer.addr));
+                ui.line(&format!("  {:<24} {}", peer.name, peer.addr()));
             }
             bail!("{}", t(K::ErrPickOne));
         }
@@ -528,12 +566,12 @@ mod tests {
 
     #[test]
     fn a_bare_host_gets_the_default_port() {
-        assert_eq!(resolve("127.0.0.1", 47100).unwrap().port(), 47100);
+        assert_eq!(resolve("127.0.0.1", 47100).unwrap()[0].port(), 47100);
     }
 
     #[test]
     fn an_explicit_port_wins() {
-        assert_eq!(resolve("127.0.0.1:9000", 47100).unwrap().port(), 9000);
+        assert_eq!(resolve("127.0.0.1:9000", 47100).unwrap()[0].port(), 9000);
     }
 
     #[test]
@@ -543,7 +581,22 @@ mod tests {
         assert!(!has_port("fe80::1"));
         assert!(has_port("[::1]:47100"));
         assert!(!has_port("[::1]"));
-        assert_eq!(resolve("[::1]:9000", 47100).unwrap().port(), 9000);
-        assert_eq!(resolve("::1", 47100).unwrap().port(), 47100);
+        assert_eq!(resolve("[::1]:9000", 47100).unwrap()[0].port(), 9000);
+        assert_eq!(resolve("::1", 47100).unwrap()[0].port(), 47100);
+    }
+
+    /// `localhost` rozwiązuje się na IPv4 i IPv6. Oba muszą przejść dalej:
+    /// pod jednym z nich potrafi nikogo nie być, a wtedy jedyną drogą jest
+    /// spróbowanie drugiego.
+    #[test]
+    fn a_name_with_two_families_keeps_both_addresses() {
+        let addrs = resolve("localhost", 47100).unwrap();
+        assert!(addrs.iter().all(|a| a.port() == 47100));
+        if addrs.len() < 2 {
+            // Bywa system, który zna tylko jedną rodzinę — nie ma czego badać.
+            return;
+        }
+        assert!(addrs.iter().any(|a| a.is_ipv4()));
+        assert!(addrs.iter().any(|a| a.is_ipv6()));
     }
 }

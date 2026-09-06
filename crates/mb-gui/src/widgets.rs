@@ -238,7 +238,7 @@ impl App {
                     .on_hover_text(t(K::OnlyOnNetworkHint));
                 for peer in &self.peers {
                     let text = if peer.compatible() {
-                        format!("{}  ({})", peer.name, peer.addr)
+                        format!("{}  ({})", peer.name, peer.addr())
                     } else {
                         t1(K::OtherProtocol, &peer.name)
                     };

@@ -215,7 +215,7 @@ fn discover(window_ms: u64) -> Result<()> {
         } else {
             t2(K::CliProtocolInstead, peer.version, PROTOCOL_VERSION)
         };
-        println!("  {:<24} {:<24}{note}", peer.name, peer.addr.to_string());
+        println!("  {:<24} {:<24}{note}", peer.name, peer.addr().to_string());
     }
     println!("\n{}", t1(K::CliSendWith, &peers[0].name));
     Ok(())

@@ -75,8 +75,12 @@ impl Drop for Advertiser {
 pub struct Peer {
     /// Nazwa do pokazania użytkownikowi.
     pub name: String,
-    /// Adres i port kanału sterującego.
-    pub addr: SocketAddr,
+    /// Wszystkie adresy, jakie o sobie ogłosił, od najlepiej rokującego.
+    ///
+    /// Nie jeden, bo maszyna z IPv4 i IPv6 ogłasza oba, a druga strona bywa,
+    /// że widzi tylko jeden z nich — i akurat ten, pod którym nikt nie
+    /// słucha. Wybieranie tu jednego zwycięzcy zamykało drogę odwrotu.
+    pub addrs: Vec<SocketAddr>,
     /// Wersja protokołu, jaką ogłasza.
     pub version: u32,
 }
@@ -85,6 +89,11 @@ impl Peer {
     /// Czy da się z nim rozmawiać.
     pub fn compatible(&self) -> bool {
         self.version == PROTOCOL_VERSION
+    }
+
+    /// Adres, od którego zaczynamy — do pokazania i do pierwszej próby.
+    pub fn addr(&self) -> SocketAddr {
+        self.addrs[0]
     }
 }
 
@@ -126,11 +135,12 @@ pub fn browse(window: Duration) -> Result<Vec<Peer>> {
 }
 
 fn to_peer(info: &mdns_sd::ResolvedService) -> Option<Peer> {
-    let addr = info
-        .addresses
-        .iter()
-        .map(|a| a.to_ip_addr())
-        .min_by_key(rank)?;
+    let mut ips: Vec<IpAddr> = info.addresses.iter().map(|a| a.to_ip_addr()).collect();
+    ips.sort_by_key(rank);
+    ips.dedup();
+    if ips.is_empty() {
+        return None;
+    }
 
     let version = info
         .get_property_val_str(TXT_VERSION)
@@ -144,22 +154,33 @@ fn to_peer(info: &mdns_sd::ResolvedService) -> Option<Peer> {
 
     Some(Peer {
         name,
-        addr: SocketAddr::new(addr, info.port),
+        addrs: ips
+            .into_iter()
+            .map(|ip| SocketAddr::new(ip, info.port))
+            .collect(),
         version,
     })
 }
 
-/// Który z ogłoszonych adresów wybrać. Mniej znaczy lepiej.
+/// W jakiej kolejności próbować ogłoszonych adresów. Mniej znaczy wcześniej.
 ///
 /// Maszyna ogłasza wszystko, co ma, łącznie z pętlą zwrotną. Ta działa
 /// wyłącznie wtedy, gdy obie strony stoją na tym samym komputerze — a to jest
-/// przypadek testowy, nie codzienny. IPv4 przed IPv6, bo link-local IPv6
-/// wymaga jeszcze indeksu interfejsu, którego nie chcemy wlec przez CLI.
+/// przypadek testowy, nie codzienny, więc idzie na koniec.
+///
+/// IPv4 przed IPv6, bo jest w domowych sieciach pewniejsze. Link-local osobno
+/// i na szarym końcu przed pętlą: `fe80::` bez indeksu interfejsu nie da się
+/// nawet połączyć, a tego indeksu mDNS nie niesie. Kolejność, nie odsiew —
+/// adres nie do użycia jest wciąż lepszy niż pusta lista, gdy innego nie ma.
 fn rank(addr: &IpAddr) -> u8 {
     match addr {
-        IpAddr::V4(v4) if v4.is_loopback() => 2,
+        IpAddr::V4(v4) if v4.is_loopback() => 4,
+        IpAddr::V4(v4) if v4.is_link_local() => 2,
         IpAddr::V4(_) => 0,
-        IpAddr::V6(v6) if v6.is_loopback() => 3,
+        IpAddr::V6(v6) if v6.is_loopback() => 5,
+        // `is_unicast_link_local` wciąż nie jest ustabilizowane, a to jest
+        // całe jego znaczenie: prefiks fe80::/10.
+        IpAddr::V6(v6) if v6.segments()[0] & 0xffc0 == 0xfe80 => 3,
         IpAddr::V6(_) => 1,
     }
 }
@@ -223,11 +244,26 @@ mod tests {
         assert_eq!(addrs.last().unwrap().to_string(), "::1");
     }
 
+    /// Adres z routera przed link-localem: pod `fe80::` bez indeksu
+    /// interfejsu nikt się nie połączy, a mDNS tego indeksu nie niesie.
+    #[test]
+    fn a_routable_ipv6_comes_before_a_link_local_one() {
+        let mut addrs: Vec<IpAddr> = vec![
+            "fe80::be30:f6f8:a4c4:dbf8".parse().unwrap(),
+            "fd43:eabb:d552:72d3:6d57:1b88:45d9:603c".parse().unwrap(),
+        ];
+        addrs.sort_by_key(rank);
+        assert_eq!(
+            addrs[0].to_string(),
+            "fd43:eabb:d552:72d3:6d57:1b88:45d9:603c"
+        );
+    }
+
     #[test]
     fn a_peer_from_another_protocol_version_is_marked() {
         let peer = Peer {
             name: "obcy".into(),
-            addr: "192.168.1.5:47100".parse().unwrap(),
+            addrs: vec!["192.168.1.5:47100".parse().unwrap()],
             version: PROTOCOL_VERSION + 1,
         };
         assert!(!peer.compatible());

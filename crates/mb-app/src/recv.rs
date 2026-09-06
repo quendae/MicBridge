@@ -9,7 +9,7 @@
 //! Pacer jest miejscem, w którym zamyka się pętla regulacji dryfu: mierzy
 //! głębokość bufora, pyta regulator o korektę i podaje ją resamplerowi.
 
-use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -99,9 +99,10 @@ pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Resul
     let target_frames = (opts.buffer_ms / FRAME_MS).max(1) as usize;
     let max_frames = (MAX_BUFFER_MS / FRAME_MS) as usize;
 
-    let listener =
-        TcpListener::bind(listen_addr).with_context(|| t1(K::ErrCannotBind, listen_addr))?;
-    listener.set_nonblocking(true)?;
+    let listeners = bind_control(listen_addr)?;
+    for listener in &listeners {
+        listener.set_nonblocking(true)?;
+    }
     ui.line(&t1(K::SesListening, listen_addr));
 
     // Ogłoszenie żyje tak długo jak nasłuch. Nie zrywamy go na czas sesji:
@@ -139,39 +140,92 @@ pub fn run(opts: &Options, ui: &dyn Reporter, running: Arc<AtomicBool>) -> Resul
     let pairing = Mutex::new(crate::pair::Pairing::new());
 
     while running.load(Ordering::Relaxed) {
-        let stream = match listener.accept() {
-            Ok((control, _)) => Ok(control),
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(ACCEPT_POLL);
-                continue;
-            }
-            Err(e) => Err(e),
-        };
-        match stream {
-            Ok(control) => {
-                let cfg = SessionConfig {
-                    sink: &opts.sink,
-                    target_frames,
-                    max_frames,
-                    adaptive: opts.adaptive,
-                };
-                if let Err(e) = session(control, &cfg, &running, &pairing, ui) {
-                    // Zatrzymanie przerywa czytanie z gniazda i wraca tędy.
-                    // To nie awaria, tylko wyjście — nie ma o czym meldować.
-                    if running.load(Ordering::Relaxed) {
-                        tracing::error!(error = %e, "sesja zakończona błędem");
-                        ui.line(&t1(K::SesEnded, e));
-                    }
-                }
-                if !running.load(Ordering::Relaxed) {
+        let mut incoming = None;
+        for listener in &listeners {
+            match listener.accept() {
+                Ok((control, _)) => {
+                    incoming = Some(control);
                     break;
                 }
-                ui.line(t(K::SesWaitNext));
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => tracing::warn!(error = %e, "nieudane połączenie przychodzące"),
             }
-            Err(e) => tracing::warn!(error = %e, "nieudane połączenie przychodzące"),
         }
+        let Some(control) = incoming else {
+            std::thread::sleep(ACCEPT_POLL);
+            continue;
+        };
+
+        let cfg = SessionConfig {
+            sink: &opts.sink,
+            target_frames,
+            max_frames,
+            adaptive: opts.adaptive,
+        };
+        if let Err(e) = session(control, &cfg, &running, &pairing, ui) {
+            // Zatrzymanie przerywa czytanie z gniazda i wraca tędy.
+            // To nie awaria, tylko wyjście — nie ma o czym meldować.
+            if running.load(Ordering::Relaxed) {
+                tracing::error!(error = %e, "sesja zakończona błędem");
+                ui.line(&t1(K::SesEnded, e));
+            }
+        }
+        if !running.load(Ordering::Relaxed) {
+            break;
+        }
+        ui.line(t(K::SesWaitNext));
     }
     Ok(())
+}
+
+/// Otwiera nasłuch sterujący — na obu rodzinach adresów, gdy proszono
+/// o „gdziekolwiek”.
+///
+/// `0.0.0.0` znaczy w gniazdach BSD „każdy adres IPv4” i ani jednego IPv6.
+/// Maszynie, którą router obdzielił adresem IPv6, mDNS ogłasza go razem
+/// z resztą — a bywa, że druga strona zobaczy tylko jego. Nadajnik łączył
+/// się wtedy pod adres, pod którym nikt nie słuchał, i nie miał dokąd wrócić.
+///
+/// Dwa gniazda zamiast jednego dwustosowego, bo `IPV6_V6ONLY` domyślnie
+/// znaczy co innego w Linuksie niż w Windows, a biblioteka standardowa nie
+/// daje go ustawić. Stąd też kolejność: w Linuksie `[::]` łapie od razu obie
+/// rodziny i drugie gniazdo odbija się od zajętego portu — to nie jest awaria,
+/// tylko znak, że pierwsze wystarczy.
+fn bind_control(addr: SocketAddr) -> Result<Vec<TcpListener>> {
+    // Konkretny adres znaczy „dokładnie tutaj”; nie dokładamy nic od siebie.
+    if !addr.ip().is_unspecified() {
+        let listener = TcpListener::bind(addr).with_context(|| t1(K::ErrCannotBind, addr))?;
+        return Ok(vec![listener]);
+    }
+
+    let mut listeners = Vec::new();
+    let mut port = addr.port();
+
+    match TcpListener::bind(SocketAddr::from((Ipv6Addr::UNSPECIFIED, port))) {
+        Ok(listener) => {
+            // Port zero znaczy „daj jakikolwiek”; drugie gniazdo ma stanąć
+            // na tym samym, a nie na kolejnym losowym.
+            port = listener.local_addr()?.port();
+            listeners.push(listener);
+        }
+        Err(e) => tracing::warn!(error = %e, "bez nasłuchu IPv6"),
+    }
+
+    match TcpListener::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port))) {
+        Ok(listener) => listeners.push(listener),
+        Err(ref e) if e.kind() == std::io::ErrorKind::AddrInUse && !listeners.is_empty() => {
+            tracing::debug!("IPv4 obsługuje gniazdo IPv6");
+        }
+        Err(e) => {
+            if listeners.is_empty() {
+                return Err(e).with_context(|| t1(K::ErrCannotBind, addr));
+            }
+            tracing::warn!(error = %e, "bez nasłuchu IPv4");
+        }
+    }
+
+    tracing::info!(gniazd = listeners.len(), "nasłuch sterujący otwarty");
+    Ok(listeners)
 }
 
 struct SessionConfig<'a> {
@@ -250,8 +304,23 @@ fn session(
         "ujście otwarte"
     );
 
-    let media = UdpSocket::bind(SocketAddr::new(control.local_addr()?.ip(), MEDIA_PORT))
-        .or_else(|_| UdpSocket::bind(("0.0.0.0", MEDIA_PORT)))
+    // Adres z gniazda dwustosowego przychodzi jako IPv6 z IPv4 w środku
+    // (`::ffff:192.168.1.112`). Media mają iść tam, skąd przyszło sterowanie,
+    // więc rozpakowujemy go z powrotem do postaci, którą zna druga strona.
+    let local_ip = match control.local_addr()?.ip() {
+        IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(v6)),
+        ip => ip,
+    };
+    let any: IpAddr = if local_ip.is_ipv6() {
+        Ipv6Addr::UNSPECIFIED.into()
+    } else {
+        Ipv4Addr::UNSPECIFIED.into()
+    };
+    let media = UdpSocket::bind(SocketAddr::new(local_ip, MEDIA_PORT))
+        .or_else(|_| UdpSocket::bind(SocketAddr::new(any, MEDIA_PORT)))
         .with_context(|| format!("nie mogę zająć portu UDP {MEDIA_PORT}"))?;
     media.set_read_timeout(Some(Duration::from_millis(200)))?;
     let ssrc = fresh_ssrc();
