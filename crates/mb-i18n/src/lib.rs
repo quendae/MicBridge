@@ -485,4 +485,33 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn the_macos_strings_exist_in_every_language_without_placeholders() {
+        use crate::catalog::text;
+        for key in [
+            Key::MacNoReceive,
+            Key::MacNoReceiveAdvice,
+            Key::MacNoAutostart,
+            Key::CliSinkMac,
+            Key::CliSinkMacNote,
+        ] {
+            for lang in [
+                Lang::Pl,
+                Lang::En,
+                Lang::De,
+                Lang::Es,
+                Lang::Fr,
+                Lang::It,
+                Lang::Uk,
+            ] {
+                let s = text(key, lang);
+                assert!(!s.is_empty(), "{key:?} pusty w {lang:?}");
+                assert!(
+                    !s.contains("{}"),
+                    "{key:?} ma miejsce do wypełnienia w {lang:?}"
+                );
+            }
+        }
+    }
 }

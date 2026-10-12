@@ -3,7 +3,8 @@
 //! Wymagania obu ról są różne i to jest źródłem większości nieporozumień:
 //! wysyłanie potrzebuje tylko mikrofonu, odbieranie potrzebuje miejsca, w które
 //! da się wpuścić cudzy dźwięk tak, żeby wyglądał na mikrofon. W Linuksie to
-//! drugie robimy sami, w Windows wymaga cudzego sterownika.
+//! drugie robimy sami, w Windows wymaga cudzego sterownika, a w macOS jeszcze
+//! tego nie umiemy — tam ta maszyna tylko wysyła.
 //!
 //! Wykrywanie opiera się na liście urządzeń, a nie na rejestrze czy plikach
 //! sterownika: pytamy dokładnie o to, czego program będzie potem używał, więc
@@ -148,7 +149,18 @@ fn sink() -> Check {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS tylko wysyła. Nie ma czego sprawdzać — jest o czym powiedzieć.
+#[cfg(target_os = "macos")]
+fn sink() -> Check {
+    bad(
+        Grade::Warn,
+        t(K::DocVirtualInput),
+        t(K::MacNoReceive),
+        t(K::MacNoReceiveAdvice),
+    )
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn sink() -> Check {
     // Windows nie pozwala programowi utworzyć mikrofonu bez sterownika trybu
     // jądra z podpisem, więc pytamy o cudzy kabel. Pytamy listę urządzeń, bo
@@ -235,5 +247,20 @@ mod tests {
         assert!(!ok("a", "jest").to_string().contains('\n'));
         let with_advice = bad(Grade::Warn, "b", "brak", "zainstaluj").to_string();
         assert!(with_advice.contains("zainstaluj"));
+    }
+
+    #[test]
+    fn on_macos_the_sink_check_is_a_warning_about_sending_only() {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let check = sink();
+        assert_eq!(
+            check.grade,
+            Grade::Warn,
+            "odbieranie w macOS to ostrzeżenie, nie błąd"
+        );
+        assert_eq!(check.detail, t(K::MacNoReceive));
+        assert_eq!(check.advice, t(K::MacNoReceiveAdvice));
     }
 }

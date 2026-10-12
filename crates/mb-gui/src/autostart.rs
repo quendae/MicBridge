@@ -2,11 +2,15 @@
 //!
 //! Każdy system robi to inaczej i żaden nie potrzebuje do tego biblioteki:
 //! w Windows to wpis w rejestrze, w Linuksie plik `.desktop` w katalogu
-//! autostartu. Obie drogi da się cofnąć jednym skasowaniem.
+//! autostartu. Obie drogi da się cofnąć jednym skasowaniem. W macOS byłby to
+//! LaunchAgent — jeszcze go nie ma, więc tam opcja uczciwie odmawia.
 
-use anyhow::{Context, Result};
+#[cfg(not(target_os = "macos"))]
+use anyhow::Context;
+use anyhow::Result;
 
 /// Pod tą nazwą wpis widnieje w systemie.
+#[cfg(not(target_os = "macos"))]
 const ENTRY: &str = "MicBridge";
 
 /// Czy jesteśmy ustawieni na start razem z systemem.
@@ -23,6 +27,7 @@ pub fn set(on: bool) -> Result<()> {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn exe() -> Result<std::path::PathBuf> {
     std::env::current_exe().context(mb_i18n::t(mb_i18n::Key::ErrOwnPath))
 }
@@ -66,7 +71,25 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod imp {
+    use super::Result;
+
+    pub fn enabled() -> Result<bool> {
+        Ok(false)
+    }
+
+    pub fn enable() -> Result<()> {
+        anyhow::bail!("{}", mb_i18n::t(mb_i18n::Key::MacNoAutostart))
+    }
+
+    /// Nie było czego włączać, więc nie ma czego wyłączać.
+    pub fn disable() -> Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
     use super::{exe, Result, ENTRY};
     use std::path::PathBuf;
@@ -119,5 +142,24 @@ mod imp {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e.into()),
         }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn on_macos_autostart_is_off_and_refuses_to_turn_on() {
+        assert!(
+            !enabled(),
+            "w macOS autostartu nie ma, więc nie może być włączony"
+        );
+        let err = set(true).expect_err("włączenie ma odmówić, nie udawać, że się udało");
+        assert_eq!(err.to_string(), mb_i18n::t(mb_i18n::Key::MacNoAutostart));
+        assert!(
+            set(false).is_ok(),
+            "wyłączenie czegoś, czego nie ma, nie jest błędem"
+        );
     }
 }

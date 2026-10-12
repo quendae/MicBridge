@@ -123,20 +123,32 @@ impl App {
     }
 
     pub(crate) fn recv_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        // W macOS odbieranie odpada (patrz `mb_audio::sink`), więc przełącznik
+        // jest wygaszony, a podpis mówi dlaczego. Reszta rysuje się jak
+        // zwykle — żeby okno wyglądało tak samo na każdym systemie.
+        let can_recv = !cfg!(target_os = "macos");
+        let hint = if can_recv {
+            t(K::ReceivingHint)
+        } else {
+            t(K::MacNoReceive)
+        };
+
         let mut wanted = self.recv.is_running();
-        section(ui, t(K::Receiving), t(K::ReceivingHint), |ui| {
+        section(ui, t(K::Receiving), hint, |ui| {
             let text = label(wanted);
-            if ui.toggle_value(&mut wanted, text).clicked() {
-                if wanted {
-                    self.start_recv(ctx);
-                } else {
-                    self.recv.stop();
+            ui.add_enabled_ui(can_recv, |ui| {
+                if ui.toggle_value(&mut wanted, text).clicked() {
+                    if wanted {
+                        self.start_recv(ctx);
+                    } else {
+                        self.recv.stop();
+                    }
                 }
-            }
+            });
         });
 
         let busy = self.recv.is_running();
-        ui.add_enabled_ui(!busy, |ui| {
+        ui.add_enabled_ui(!busy && can_recv, |ui| {
             // Zawijane, bo w wąskim oknie ostatnie pole inaczej wychodzi poza
             // krawędź i nie ma jak go dosięgnąć.
             ui.horizontal_wrapped(|ui| {
@@ -270,7 +282,11 @@ impl App {
     /// i przypomnienie, z kim jest już umówiony.
     pub(crate) fn footer_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            if ui.checkbox(&mut self.autostart, t(K::Autostart)).changed() {
+            // W macOS autostartu nie ma (patrz `autostart.rs`), więc nie ma
+            // co pokazywać przełącznika, który i tak by odmówił.
+            if !cfg!(target_os = "macos")
+                && ui.checkbox(&mut self.autostart, t(K::Autostart)).changed()
+            {
                 self.footer_error = match autostart::set(self.autostart) {
                     Ok(()) => None,
                     Err(e) => {

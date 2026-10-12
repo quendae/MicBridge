@@ -1,17 +1,21 @@
 //! Gdzie ląduje odebrany dźwięk.
 //!
-//! Dwie drogi, bo dwa systemy dają co innego (§4 architektury):
+//! Trzy systemy, trzy drogi (§4 architektury):
 //!
 //! * **Linux** — tworzymy własny węzeł PipeWire i sami jesteśmy mikrofonem.
 //!   Nic nie trzeba instalować.
 //! * **Windows** — nie da się utworzyć urządzenia wejściowego bez sterownika
 //!   trybu jądra, więc piszemy do cudzego wirtualnego kabla, który znajdujemy
 //!   po nazwie.
+//! * **macOS** — też wymagałby cudzego sterownika, a tego jeszcze nie
+//!   obsługujemy. Ten system tylko wysyła; odbieranie jako mikrofon odpada
+//!   od razu z jasnym komunikatem. Zwykłe urządzenie wyjściowe nadal działa.
 //!
 //! Poza tym jednym kafelkiem cała reszta silnika jest symetryczna, dlatego
 //! różnica siedzi tutaj i nigdzie indziej.
 
 use anyhow::{bail, Result};
+use mb_i18n::{t, Key as K};
 
 use crate::{start_playback, Direction, PlaybackHandle};
 
@@ -85,7 +89,12 @@ where
         {
             return open_virtual(rate, fill);
         }
-        #[cfg(not(target_os = "linux"))]
+        // W macOS `auto` znaczy to samo, co `virtual` — i tak samo odpada.
+        #[cfg(target_os = "macos")]
+        {
+            return open_virtual(rate, fill);
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             return open_cable(rate, fill);
         }
@@ -111,7 +120,15 @@ where
     )?))
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+fn open_virtual<F>(_rate: u32, _fill: F) -> Result<Sink>
+where
+    F: FnMut(&mut [f32]) + Send + 'static,
+{
+    bail!("{}\n{}", t(K::MacNoReceive), t(K::MacNoReceiveAdvice))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn open_virtual<F>(_rate: u32, _fill: F) -> Result<Sink>
 where
     F: FnMut(&mut [f32]) + Send + 'static,
@@ -173,7 +190,16 @@ where
 /// nie ma jednak na co czekać — inaczej odbiornik w Windows z `--sink virtual`
 /// wygląda na działający, dopóki ktoś się nie połączy.
 pub fn validate(selector: &str) -> Result<()> {
-    if selector.trim().eq_ignore_ascii_case("virtual") && !cfg!(target_os = "linux") {
+    let selector = selector.trim();
+    let wants_virtual = selector.eq_ignore_ascii_case("virtual");
+    let wants_auto = selector.eq_ignore_ascii_case("auto");
+
+    // macOS: ani własnego węzła, ani cudzego kabla — obie drogi odpadają.
+    if cfg!(target_os = "macos") && (wants_virtual || wants_auto) {
+        bail!("{}\n{}", t(K::MacNoReceive), t(K::MacNoReceiveAdvice));
+    }
+
+    if wants_virtual && !cfg!(target_os = "linux") {
         bail!(
             "`--sink virtual` działa tylko w Linuksie, gdzie PipeWire pozwala \
              utworzyć własny mikrofon.\n\
@@ -219,8 +245,19 @@ mod tests {
     }
 
     #[test]
-    fn every_other_selector_passes_validation() {
-        for s in ["auto", "device", "@0", "cable input", "  AUTO  "] {
+    fn auto_is_refused_up_front_on_macos_only() {
+        for s in ["auto", "  AUTO  "] {
+            assert_eq!(
+                validate(s).is_err(),
+                cfg!(target_os = "macos"),
+                "`{s}` w macOS ma odpaść od razu, gdzie indziej przejść"
+            );
+        }
+    }
+
+    #[test]
+    fn plain_devices_pass_validation_everywhere() {
+        for s in ["device", "@0", "cable input", "MacBook Pro Speakers"] {
             assert!(validate(s).is_ok(), "odrzucono `{s}`");
         }
     }

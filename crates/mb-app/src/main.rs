@@ -314,6 +314,9 @@ fn list_devices() -> Result<()> {
     if cfg!(target_os = "linux") {
         println!("{}", t1(K::CliSinkLinux, mb_audio::DISPLAY_NAME));
         println!("{}", t(K::CliSinkLinuxNote));
+    } else if cfg!(target_os = "macos") {
+        println!("{}", t(K::CliSinkMac));
+        println!("{}", t(K::CliSinkMacNote));
     } else {
         println!("{}", t(K::CliSinkWindows));
         println!("{}", t(K::CliSinkWindowsNote));

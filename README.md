@@ -27,6 +27,7 @@ Linux ↔ Windows, either direction. No account, no server, no cloud.
 | **Debian, Ubuntu** | `sudo apt install ./micbridge_*.deb` |
 | **Fedora, openSUSE** | `sudo dnf install ./micbridge-*.rpm` |
 | **Arch and friends** | `makepkg -si` in `packaging/arch` |
+| **macOS** | send-only, built from source — see [docs/MACOS.md](docs/MACOS.md) |
 
 Every package carries both programs: the window, `micbridge-gui`, and the
 command line, `micbridge`.
@@ -95,13 +96,19 @@ Your devices do not have to run at 48 kHz — whichever side needs it resamples.
 
 ## Where the audio lands
 
-This is the one place where the two systems genuinely differ.
+This is the one place where the systems genuinely differ.
 
 | `--sink` | Linux | Windows |
 |---|---|---|
 | `auto` (default) | creates a "MicBridge" microphone in PipeWire | finds a virtual cable by name |
 | `virtual` | the same, forced | refused at startup |
 | `device`, or part of a name | an ordinary output device | an ordinary output device |
+
+On **macOS** MicBridge only sends. `--sink auto` and `--sink virtual` are
+refused at startup; `--sink device` or a device name plays the remote
+microphone through the speakers, which is useful for a test and for nothing
+else. Making the remote microphone appear as an input device on a Mac would
+need a virtual audio driver, and that is not done yet.
 
 On **Linux** there is nothing to install. The process introduces itself to the
 PipeWire graph as an audio source and appears in microphone lists as
@@ -216,7 +223,8 @@ sudo pacman -S base-devel cmake clang alsa-lib pipewire gtk3 \
 ```
 
 On Windows the MSVC toolchain plus CMake is enough; everything else comes from
-crates.
+crates. On macOS it is the Xcode command line tools plus `brew install cmake`;
+the step-by-step is in [docs/MACOS.md](docs/MACOS.md).
 
 ```
 crates/mb-proto/    RTP framing, CBOR control messages, sequence-number extension
